@@ -1,0 +1,207 @@
+/**
+ * Gate.h - ESP32 Swing Gate Controller Header
+ * 
+ * Defines the Gate class interface and related enumerations
+ * for controlling and monitoring a Sommer Twist 350 swing gate.
+ */
+
+#ifndef Gate_h
+#define Gate_h
+
+#include "Arduino.h"
+#include <arduino-timer.h>
+
+// ============================================================================
+// GPIO PIN DEFINITIONS
+// ============================================================================
+// LED Indicators
+extern const int PIN_LED_GATE_CLOSED;  // Red LED: closed (blink = closing)
+extern const int PIN_LED_GATE_OPEN;    // Green LED: open (blink = opening)
+
+// Relay Controls
+extern const int PIN_RELAY_GATE_CLOSE; // Close relay control
+extern const int PIN_RELAY_GATE_OPEN;  // Open relay control
+extern const int PIN_RELAY_GATE_STOP;  // Stop relay control
+
+// Sensor Inputs
+extern const int PIN_SENSOR_GATE_LOCK;  // High when gate is closed; Low when gate is: open, opening or closing
+extern const int PIN_SENSOR_GATE_LIGHTS;  // Gate lights sensor
+extern const int PIN_SENSOR_PHOTO_EYE;    // Photo eye sensor
+extern const int PIN_SENSOR_EXTERNAL_RELAY; // External relay sensor
+
+
+// ============================================================================
+// GATE STATE ENUMERATION
+// ============================================================================
+enum GateState : byte {
+    GATE_UNKNOWN,   // Initial state or sensor malfunction
+    GATE_CLOSED,    // Gate is fully closed (sensor HIGH)
+    GATE_OPENING,   // Gate is in process of opening
+    GATE_OPEN,      // Gate is fully open (sensor LOW, stable)
+    GATE_CLOSING    // Gate is in process of closing
+};
+
+// ============================================================================
+// GATE CLASS DECLARATION
+// ============================================================================
+class Gate {
+public:
+    /**
+     * Constructor - Initialize gate controller
+     */
+    Gate();
+    
+    /**
+     * Destructor - Clean up resources
+     */
+    ~Gate();
+    
+    /**
+     * Initialize gate controller
+     * Must be called after GPIO pins are configured
+     */
+    void initialize();
+    
+    /**
+     * Update gate state machine
+     * Should be called regularly in main loop
+     */
+    void update();
+    
+    /**
+     * Toggle gate state (open if closed, close if open)
+     * Equivalent to button press functionality
+     */
+    void toggle();
+    
+    /**
+     * Command gate to stop
+     * Only effective if gate is currently moving
+     */
+    void stopGate();
+
+    /**
+     * Command gate to open
+     * Only effective if gate is currently closed
+     */
+    void openGate();
+    
+    /**
+     * Command gate to close  
+     * Only effective if gate is currently open
+     */
+    void closeGate();
+    
+    /**
+     * Get current gate state
+     * @return Current GateState enumeration value
+     */
+    GateState getState() const;
+    
+    /**
+     * Check if gate is currently moving
+     * @return true if gate is opening or closing
+     */
+    bool isMoving() const;
+
+    /**
+     * Check if gate is physically in motion based on warning light blinking
+     * @return true if gate lights have blinked recently (within blink gap threshold)
+     */
+    bool isInMotion() const;
+    
+    /**
+     * Check if relay is currently active
+     * @return true if relay is currently activated
+     */
+    bool isRelayActive() const;
+    
+    /**
+     * Get state as string for logging/MQTT
+     * @return String representation of current state
+     */
+    String getStateString() const;
+
+    /**
+     * Get current gate lock sensor state
+     * @return true if sensor is HIGH (gate is closed), false otherwise
+     */
+    bool getSensorLockGate() const;
+
+    /**
+     * Get current gate lights sensor state
+     * @return true if sensor is HIGH, false otherwise
+     */
+    bool getSensorGateLights() const;
+
+    /**
+     * Get current photo eye sensor state
+     * @return true if sensor is HIGH, false otherwise
+     */
+    bool getSensorPhotoEye() const;
+
+    /**
+     * Get current external relay sensor state
+     * @return true if sensor is HIGH, false otherwise
+     */
+    bool getSensorExternalRelay() const;
+
+    /**
+     * Set callback function to be called when sensors change
+     * @param callback Function pointer to call on sensor change
+     */
+    void setSensorChangeCallback(void (*callback)());
+
+protected:
+    // State tracking (protected to allow test harness to force state)
+    GateState _currentState;    // Current gate state
+    GateState _previousState;   // Previous state for change detection
+
+private:
+    // Timer management
+    // Timer<> _stateTimer;        // Timer for gate operation timing
+    Timer<> _relayTimer;        // Timer for relay pulse control
+    bool _sensorLockGate;          // Current lock sensor reading
+    bool _previousSensorLockGate;  // Previous lock sensor reading for debouncing
+    bool _sensorGateLights;        // Current gate lights sensor reading
+    bool _previousSensorGateLights; // Previous gate lights sensor reading for debouncing
+    bool _sensorPhotoEye;          // Current photo eye sensor reading
+    bool _previousSensorPhotoEye;  // Previous photo eye sensor reading for debouncing
+    bool _sensorExternalRelay;     // Current external relay sensor reading
+    bool _previousSensorExternalRelay; // Previous external relay sensor reading for debouncing
+    
+    // Timing variables
+    unsigned long _lastStateChange;     // Timestamp of last state change
+    unsigned long _lastSensorReadLock;      // Timestamp of last lock sensor reading
+    unsigned long _lastSensorReadLights;    // Timestamp of last lights sensor reading
+    unsigned long _lastSensorReadPhotoEye;  // Timestamp of last photo eye sensor reading
+    unsigned long _lastSensorReadExtRelay;  // Timestamp of last external relay sensor reading
+    unsigned long _relayActivationTime; // Timestamp when relay was activated
+    unsigned long _lastSensorChangeNotify;  // Timestamp of last sensor change notification
+    unsigned long _lastLightsHighTime;       // Timestamp of last lights HIGH reading
+    bool _inMotion;                          // True while warning light blinks (gate physically moving)
+    
+    // Control flags
+    bool _relayActive;          // Flag indicating relay is currently active
+    bool _initialized;          // Flag indicating initialization complete
+    
+    // Callback function
+    void (*_sensorChangeCallback)();    // Callback for sensor changes
+    
+    // Private methods
+    void _updateGateState(GateState newState);
+    void _activateRelay(int relayPin, const char* relayName);
+    void _deactivateRelays();
+    void _logStateChange(GateState oldState, GateState newState);
+    bool _isValidStateTransition(GateState from, GateState to);
+    void _handleBootupState();
+
+protected:
+    virtual unsigned long _millis();
+    virtual bool _readSensorLock();
+    virtual bool _readSensorLights();
+    virtual bool _readSensorPhotoEye();
+    virtual bool _readSensorExternalRelay();
+};
+
+#endif // Gate_h
