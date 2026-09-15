@@ -74,7 +74,7 @@ Used LibrePCB to design the schematics and PCB.
 
 ![PCB](MarstekModBusGateway_PCB_v1.0.png)
 
-Gerber files for the PCB can be found [here](librepcb/output/v1.1/gerber).
+Gerber files for the PCB can be found [here](librepcb/output/v1.0/gerber).
 
 # Input/Output
 
