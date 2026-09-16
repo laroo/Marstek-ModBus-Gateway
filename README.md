@@ -125,6 +125,47 @@ TEST_FILTER=test_mytest pio test -v -e native
 pio run --target upload -v
 ```
 
+### Wokwi Simulation
+
+The firmware can be simulated using Wokwi.
+
+#### Installation
+
+To install the Wokwi CLI:
+
+```
+curl -L https://wokwi.com/ci/install.sh | sh
+```
+
+#### Running the Simulation
+
+To run the simulation:
+
+Build the ESP32 firmware for Wokwi:
+
+```
+pio run --environment esp32_wokwi
+```
+
+Build custom RS485 chip:
+
+```
+wokwi-cli chip compile wokwi/max485-marstek.chip.c
+```
+
+Run simulation:
+
+```
+wokwi-cli wokwi
+```
+
+Run linter:
+
+```
+wokwi-cli lint wokwi
+```
+
+
 ### OTA (Over-the-Air) Update
 
 The firmware includes [ElegantOTA](https://github.com/ayushsharma82/ElegantOTA) for wireless firmware updates over the network.

@@ -1,0 +1,8 @@
+[wokwi]
+version = 1
+elf = "../.pio/build/esp32_wokwi/firmware.elf"
+firmware = "../.pio/build/esp32_wokwi/firmware.bin"
+
+[[chip]]
+name = 'max485-marstek' # To use the chip in diagram.json, add a part with "chip-max485-marstek" type.
+binary = 'max485-marstek.chip.wasm'

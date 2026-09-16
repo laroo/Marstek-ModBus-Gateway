@@ -1,0 +1,15 @@
+{
+  "name": "MAX485-Marstek",
+  "author": "Jan-Age Laroo",
+  "docs": "https://github.com/laroo/Marstek-ModBus-Gateway/blob/main/README.md",
+  "pins": [
+    "RO",
+    "RE",
+    "DE",
+    "DI",
+    "VCC",
+    "B",
+    "A",
+    "GND"
+  ]
+}
