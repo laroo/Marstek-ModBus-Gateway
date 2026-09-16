@@ -23,7 +23,7 @@ constexpr int BOARD_485_RX = 32;  // yellow wire to RO (Receiver Output)
 constexpr int BOARD_485_TX = 33;  // brown wire to DI (Driver Input)
 constexpr int MAX485_DE = 23;  // blue wire to DE (Driver Enable) 
 constexpr int MAX485_RE = 22;  // pink wire to RE (Receiver Enable)
-constexpr int MODBUS_BAUD_RATE = 9600;
+constexpr int MODBUS_BAUD_RATE = 115200;
 
 // Define the UART2 default pins
 #define RX2_PIN 16
@@ -96,46 +96,25 @@ void setup(void) {
   // Serial.println(F("Sent 485 data"));
 }
 
-bool state = true;
-
-auto modbus_read_request = {
-  0x01, 0x03, 0x00, 0x01, 0x00, 0x02, 0x05, 0xCB
-};
-
 void loop() {
-  while (Serial485.available()) {
-    byte b = Serial485.read();
+  // Read battery voltage, current and power (registers 32100..32103)
+  uint8_t result = node.readHoldingRegisters(0x7D64, 4);
+  if (result == node.ku8MBSuccess) {
+    uint16_t voltage_raw = node.getResponseBuffer(0);  // 32100, 0.01 V
+    uint16_t current_raw = node.getResponseBuffer(1);  // 32101, 0.01 A (s16)
+    uint16_t power_high  = node.getResponseBuffer(2);  // 32102, s32 high word
+    uint16_t power_low   = node.getResponseBuffer(3);  // 32103, s32 low word
 
-    Serial.printf("Incoming MAX485 data: %02X \n", b);
+    float voltage = voltage_raw / 100.0f;
+    float current = (int16_t)current_raw / 100.0f;
+    int32_t power = ((int32_t)(int16_t)power_high << 16) | power_low;
+
+    Serial.printf("Vbatt: %.2f V\n", voltage);
+    Serial.printf("Ibatt: %.2f A\n", current);
+    Serial.printf("Pbatt: %ld W\n", power);
+  } else {
+    Serial.printf("Modbus error: 0x%02X\n", result);
   }
-
-
-  uint8_t result;
-  uint16_t data[6];
-  
-  // Toggle the coil at address 0x0002 (Manual Load Control)
-  // result = node.writeSingleCoil(0x0002, state);
-  // state = !state;
-
-  // // Read 16 registers starting at 0x3100)
-  // result = node.readInputRegisters(0x3100, 16);
-  // if (result == node.ku8MBSuccess)
-  // {
-  //   Serial.print("Vbatt: ");
-  //   Serial.println(node.getResponseBuffer(0x04)/100.0f);
-  //   Serial.print("Vload: ");
-  //   Serial.println(node.getResponseBuffer(0xC0)/100.0f);
-  //   Serial.print("Pload: ");
-  //   Serial.println((node.getResponseBuffer(0x0D) +
-  //                   node.getResponseBuffer(0x0E) << 16)/100.0f);
-  // }
-
-  preTransmission();
-  for (int b : modbus_read_request) {
-    Serial485.write(b);
-  }
-  Serial485.flush();
-  postTransmission();
 
   delay(1000);
 }

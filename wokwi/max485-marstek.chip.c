@@ -1,19 +1,25 @@
-// Wokwi Custom UART Chip Example
+// Wokwi Custom Chip - Marstek Venus E v2.0 Modbus RTU Slave Emulator
 //
-// This chip implements a simple ROT13 letter substitution cipher.
-// It receives a string over UART, and returns the same string with
-// each alphabetic character replaced with its ROT13 substitution.
+// Emulates the Modbus RTU protocol of a Marstek Venus E v2.0 battery
+// system behind an RS-485 transceiver. The chip receives Modbus RTU
+// requests over UART and responds with the requested register data.
 //
-// For information and examples see:
-// https://link.wokwi.com/custom-chips-alpha
-//
-// SPDX-License-Identifier: MIT
-// Copyright (C) 2022 Uri Shaked / wokwi.com
 
 #include "wokwi-api.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <string.h>
+
+#define MODBUS_SLAVE_ID 1
+
+// Marstek Venus E v2.0 default: 115200 baud, 8N1.
+// Must stay in sync with the ESP32 firmware.
+#define MODBUS_BAUD_RATE 115200
+
+// 3.5 character time at the configured baud rate (microseconds).
+// At 115200 baud this is ~0.3 ms; use a slightly larger threshold.
+#define MODBUS_INTER_FRAME_US 500
 
 typedef struct {
   uart_dev_t uart0;
@@ -33,7 +39,7 @@ void chip_init(void) {
   const uart_config_t uart_config = {
     .tx = pin_init("RO", INPUT_PULLUP),
     .rx = pin_init("DI", INPUT),
-    .baud_rate = 9600,
+    .baud_rate = MODBUS_BAUD_RATE,
     .rx_data = on_uart_rx_data,
     .write_done = on_uart_write_done,
     .user_data = chip,
@@ -48,69 +54,190 @@ void chip_init(void) {
   };
 
   timer_t timer = timer_init(&t_config);
-  uint32_t interval = 500;
-  timer_start(timer, interval, true);
+  // Poll frequently enough to detect the end of a Modbus frame.
+  timer_start(timer, 500, true);
 
-  printf("MAX485 Chip initialized!\n");
+  printf("MAX485/Marstek chip initialized at %d baud\n", MODBUS_BAUD_RATE);
 }
 
-#define GET_KEY(fc, ah, al, qh, ql) ((uint64_t)(fc) << 40) | ((uint64_t)(ah) << 32) | ((uint64_t)(al) << 24) | ((uint64_t)(qh) << 16) | ((uint64_t)(ql) << 8)
-
-
-static void process_modbus_frame(uart_dev_t uart0, uint8_t *buffer, uint16_t length) {
-  // Create the key from buffer[1], buffer[2], and buffer[3]
-
-  uint64_t key = GET_KEY(buffer[1], buffer[2], buffer[3], buffer[4], buffer[5]);
-
-  printf("Working key 0x%016llX\n", key);
-
-  // Use a switch-case to handle the different possible keys
-  switch(key) {
-    case GET_KEY(0x03, 0x00, 0x01, 0x00, 0x02): {
-      uint8_t response[] = {0x03, 0x04, 0x00, 0x01, 0x00, 0x01, 0x00, 0x01};
-      uart_write(uart0, response, sizeof(response));
-      break;
-    }
-    // Add more cases here
-    default: {
-      // Handle missing response, perhaps by sending a Modbus exception
+// CRC-16 (Modbus RTU, polynomial 0x8005, init 0xFFFF)
+static uint16_t modbus_crc16(const uint8_t *data, uint16_t length) {
+  uint16_t crc = 0xFFFF;
+  for (uint16_t i = 0; i < length; i++) {
+    crc ^= data[i];
+    for (uint8_t j = 0; j < 8; j++) {
+      if (crc & 0x0001) {
+        crc = (crc >> 1) ^ 0xA001;
+      } else {
+        crc >>= 1;
+      }
     }
   }
+  return crc;
+}
+
+static void send_modbus_response(uart_dev_t uart0, uint8_t slave_id,
+                                  uint8_t function_code, const uint8_t *data,
+                                  uint16_t data_length) {
+  uint8_t response[256];
+  uint16_t pos = 0;
+
+  response[pos++] = slave_id;
+  response[pos++] = function_code;
+  response[pos++] = (uint8_t)data_length;
+  for (uint16_t i = 0; i < data_length; i++) {
+    response[pos++] = data[i];
+  }
+
+  uint16_t crc = modbus_crc16(response, pos);
+  response[pos++] = crc & 0xFF;
+  response[pos++] = (crc >> 8) & 0xFF;
+
+  printf("[TX] %02X %02X (len=%u)", slave_id, function_code, data_length);
+  uart_write(uart0, response, pos);
+}
+
+static void send_modbus_exception(uart_dev_t uart0, uint8_t slave_id,
+                                   uint8_t function_code, uint8_t exception_code) {
+  uint8_t response[5];
+  response[0] = slave_id;
+  response[1] = function_code | 0x80;
+  response[2] = exception_code;
+
+  uint16_t crc = modbus_crc16(response, 3);
+  response[3] = crc & 0xFF;
+  response[4] = (crc >> 8) & 0xFF;
+
+  printf("[TX] Exception 0x%02X for function 0x%02X\n", exception_code, function_code);
+  uart_write(uart0, response, 5);
+}
+
+static void process_modbus_frame(uart_dev_t uart0, uint8_t *buffer, uint16_t length) {
+  if (length < 8) {
+    printf("Frame too short (%hu bytes)\n", length);
+    return;
+  }
+
+  uint8_t slave_id = buffer[0];
+  uint8_t function_code = buffer[1];
+  uint16_t address = ((uint16_t)buffer[2] << 8) | buffer[3];
+  uint16_t quantity = ((uint16_t)buffer[4] << 8) | buffer[5];
+
+  // Verify CRC over the request (all bytes except the trailing CRC)
+  uint16_t received_crc = ((uint16_t)buffer[length - 1] << 8) | buffer[length - 2];
+  uint16_t calculated_crc = modbus_crc16(buffer, length - 2);
+  if (received_crc != calculated_crc) {
+    printf("CRC mismatch: received 0x%04X, calculated 0x%04X\n", received_crc, calculated_crc);
+    return;
+  }
+
+  if (slave_id != MODBUS_SLAVE_ID) {
+    printf("Ignoring request for slave %d\n", slave_id);
+    return;
+  }
+
+  printf("[RX] Slave %d FC 0x%02X Addr 0x%04X Qty %hu\n", slave_id, function_code, address, quantity);
+
+  if (function_code != 0x03) {
+    send_modbus_exception(uart0, slave_id, function_code, 0x01); // Illegal function
+    return;
+  }
+
+  uint8_t response_data[256];
+  uint16_t response_length = 0;
+
+  switch (address) {
+    // Device name (31000 / 0x7918), 20 bytes / 10 registers
+    case 0x7918: {
+      if (quantity != 10) {
+        send_modbus_exception(uart0, slave_id, function_code, 0x03); // Illegal data value
+        return;
+      }
+      response_length = 20;
+      memcpy(response_data, "BI_2.5_2.5", 10);
+      memset(response_data + 10, 0, 10);
+      break;
+    }
+
+    // Battery voltage (average) (32100 / 0x7D64), u16, 0.01 V
+    case 0x7D64: {
+      if (quantity == 1) {
+        response_length = 2;
+        response_data[0] = 0x14; // 5120 -> 51.20 V
+        response_data[1] = 0x00;
+      } else if (quantity == 4) {
+        // Convenience: voltage + current + power in one read (32100..32103)
+        response_length = 8;
+        response_data[0] = 0x14; response_data[1] = 0x00; // 32100 voltage
+        response_data[2] = 0x05; response_data[3] = 0xDE; // 32101 current 1502
+        response_data[4] = 0x00; response_data[5] = 0x00; // 32102 power high
+        response_data[6] = 0x09; response_data[7] = 0xC4; // 32103 power low 2500
+      } else {
+        send_modbus_exception(uart0, slave_id, function_code, 0x03);
+        return;
+      }
+      break;
+    }
+
+    // Battery current (average) (32101 / 0x7D65), s16, 0.01 A
+    case 0x7D65: {
+      if (quantity != 1) {
+        send_modbus_exception(uart0, slave_id, function_code, 0x03);
+        return;
+      }
+      response_length = 2;
+      response_data[0] = 0x05; // 1502 -> 15.02 A
+      response_data[1] = 0xDE;
+      break;
+    }
+
+    // Battery power (32102 / 0x7D66), s32, 1 W (spans 2 registers)
+    case 0x7D66: {
+      if (quantity != 2) {
+        send_modbus_exception(uart0, slave_id, function_code, 0x03);
+        return;
+      }
+      response_length = 4;
+      response_data[0] = 0x00; response_data[1] = 0x00; // high word
+      response_data[2] = 0x09; response_data[3] = 0xC4; // low word 2500 W
+      break;
+    }
+
+    default: {
+      send_modbus_exception(uart0, slave_id, function_code, 0x02); // Illegal data address
+      return;
+    }
+  }
+
+  send_modbus_response(uart0, slave_id, function_code, response_data, response_length);
 }
 
 
 static void chip_timer_callback(void *user_data) {
   chip_state_t *chip = (chip_state_t*)user_data;
-  uint64_t current_time = get_sim_nanos() / 1000; // current time in nanoseconds
+  uint64_t current_time = get_sim_nanos() / 1000; // microseconds
 
-  // Check for 3.5 character time gap (approx. 3650 ns for 9600 baud)
-  if (chip->last_byte_time && current_time - chip->last_byte_time >= 36500) {
-    // Time gap detected, process the buffer
+  if (chip->last_byte_time && (current_time - chip->last_byte_time) >= MODBUS_INTER_FRAME_US) {
     if (chip->bufferIndex > 0) {
-      printf("Time gap detected: %llu\n", current_time - chip->last_byte_time);
-      printf("chip time %llu vs. current time %llu\n", chip->last_byte_time, current_time);
-      printf("Buffer size: %hu b[0] = %hu\n", chip->bufferIndex, chip->modbusBuffer);
+      printf("Frame complete: %hu bytes\n", chip->bufferIndex);
       process_modbus_frame(chip->uart0, chip->modbusBuffer, chip->bufferIndex);
     }
-    chip->bufferIndex = 0;  // Reset buffer
+    chip->bufferIndex = 0;
+    chip->last_byte_time = 0;
   }
 }
 
- static void on_uart_rx_data(void *user_data, uint8_t byte) {
+static void on_uart_rx_data(void *user_data, uint8_t byte) {
   chip_state_t *chip = (chip_state_t*)user_data;
 
-  // Save the byte to the buffer
   if (chip->bufferIndex < sizeof(chip->modbusBuffer)) {
     chip->modbusBuffer[chip->bufferIndex++] = byte;
   }
 
-  // Update the last byte time
-  uint64_t current_time = get_sim_nanos() / 1000; // current time in nanoseconds
-  chip->last_byte_time = current_time;
-
+  chip->last_byte_time = get_sim_nanos() / 1000; // microseconds
 }
 
 static void on_uart_write_done(void *user_data) {
   chip_state_t *chip = (chip_state_t*)user_data;
-  printf("MAX485 done\n");
+  (void)chip;
 }
