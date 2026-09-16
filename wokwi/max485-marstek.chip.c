@@ -203,6 +203,41 @@ static void process_modbus_frame(uart_dev_t uart0, uint8_t *buffer, uint16_t len
       break;
     }
 
+    // Software version (30400 / 0x76C0), u16, 0.01 scale
+    case 0x76C0: {
+      if (quantity != 1) {
+        send_modbus_exception(uart0, slave_id, function_code, 0x03);
+        return;
+      }
+      response_length = 2;
+      response_data[0] = 0x00; // 0x0067 -> 1.03
+      response_data[1] = 0x67;
+      break;
+    }
+
+    // Firmware version (30401 / 0x76C1), u16
+    case 0x76C1: {
+      if (quantity != 1) {
+        send_modbus_exception(uart0, slave_id, function_code, 0x03);
+        return;
+      }
+      response_length = 2;
+      response_data[0] = 0x00; // 0x0099 -> 153
+      response_data[1] = 0x99;
+      break;
+    }
+
+    // Device MAC address (30402 / 0x76C2), char[12] / 6 registers
+    case 0x76C2: {
+      if (quantity != 6) {
+        send_modbus_exception(uart0, slave_id, function_code, 0x03);
+        return;
+      }
+      response_length = 12;
+      memcpy(response_data, "A1B2C3D4E5F6", 12);
+      break;
+    }
+
     default: {
       send_modbus_exception(uart0, slave_id, function_code, 0x02); // Illegal data address
       return;

@@ -26,6 +26,9 @@ Only function code **0x03** (Read Holding Registers) is implemented at the momen
 | Register (DEC) | Register (HEX) | Name | Type | Implemented | Notes |
 |---|---|---|---|---|---|
 | 31000 | `0x7918` | Device name | `char[20]` | Yes | Returns `"BI_2.5_2.5"` padded with zeros; read quantity must be `10` registers |
+| 30400 | `0x76C0` | Software version | `u16`, 0.01 | Yes | Returns `0x0067` (103 -> 1.03); read quantity must be `1` |
+| 30401 | `0x76C1` | Firmware version | `u16` | Yes | Returns `0x0099` (153); read quantity must be `1` |
+| 30402 | `0x76C2` | Device MAC address | `char[12]` | Yes | Returns `"A1B2C3D4E5F6"`; read quantity must be `6` registers |
 | 32100 | `0x7D64` | Battery voltage (average) | `u16`, 0.01 V | Yes | Returns `5120` (51.20 V); supports quantity `1` or `4` |
 | 32101 | `0x7D65` | Battery current (average) | `s16`, 0.01 A | Yes | Returns `1502` (15.02 A); read quantity must be `1` |
 | 32102 | `0x7D66` | Battery power | `s32`, 1 W | Yes | Returns `2500` W; spans registers `32102` and `32103`; read quantity must be `2` |
@@ -53,7 +56,8 @@ Based on `specs/Modbus Table - Modbus Datasheet.csv`:
 - [x] 32102 — Battery power
 - [ ] 30000..30010 — Average/grid measurements
 - [ ] 30100, 30200, 30300..30303 — Status / WiFi / BT / Cloud
-- [ ] 30399, 30400, 30401, 30402 — BMS/software/firmware version + MAC
+- [ ] 30399 — BMS version (same as 31102)
+- [x] 30400, 30401, 30402 — Software/firmware version + MAC
 - [ ] 30500..30800 — Misc status
 - [ ] 31100..31102 — Soft/firmware/BMS version
 - [ ] 31200 — SN code

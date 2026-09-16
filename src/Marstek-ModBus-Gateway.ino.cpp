@@ -51,14 +51,14 @@ ModbusMaster node;
 // Callback functions to toggle RS485 transmit/receive direction
 void preTransmission() {
   // Set to Transmit mode
-  Serial.println(F("[RS485] preTransmission"));
+  // Serial.println(F("[RS485] preTransmission"));
   digitalWrite(MAX485_DE, HIGH);
   digitalWrite(MAX485_RE, HIGH);
 }
 
 void postTransmission() {
   // Set to Receive mode
-  Serial.println(F("[RS485] postTransmission"));
+  // Serial.println(F("[RS485] postTransmission"));
   digitalWrite(MAX485_DE, LOW);
   digitalWrite(MAX485_RE, LOW);
 }
@@ -97,8 +97,10 @@ void setup(void) {
 }
 
 void loop() {
+  uint8_t result;
+
   // Read battery voltage, current and power (registers 32100..32103)
-  uint8_t result = node.readHoldingRegisters(0x7D64, 4);
+  result = node.readHoldingRegisters(0x7D64, 4);
   if (result == node.ku8MBSuccess) {
     uint16_t voltage_raw = node.getResponseBuffer(0);  // 32100, 0.01 V
     uint16_t current_raw = node.getResponseBuffer(1);  // 32101, 0.01 A (s16)
@@ -113,9 +115,42 @@ void loop() {
     Serial.printf("Ibatt: %.2f A\n", current);
     Serial.printf("Pbatt: %ld W\n", power);
   } else {
-    Serial.printf("Modbus error: 0x%02X\n", result);
+    Serial.printf("Battery read error: 0x%02X\n", result);
   }
 
-  delay(1000);
+  // Read software version (30400 / 0x76C0), u16, 0.01 scale
+  result = node.readHoldingRegisters(0x76C0, 1);
+  if (result == node.ku8MBSuccess) {
+    uint16_t sw_version = node.getResponseBuffer(0);
+    Serial.printf("Software version: 0x%04X (%.2f)\n", sw_version, sw_version / 100.0f);
+  } else {
+    Serial.printf("Software version read error: 0x%02X\n", result);
+  }
+
+  // Read firmware version (30401 / 0x76C1), u16
+  result = node.readHoldingRegisters(0x76C1, 1);
+  if (result == node.ku8MBSuccess) {
+    uint16_t fw_version = node.getResponseBuffer(0);
+    Serial.printf("Firmware version: 0x%04X (%u)\n", fw_version, fw_version);
+  } else {
+    Serial.printf("Firmware version read error: 0x%02X\n", result);
+  }
+
+  // Read device MAC address (30402 / 0x76C2), char[12] / 6 registers
+  result = node.readHoldingRegisters(0x76C2, 6);
+  if (result == node.ku8MBSuccess) {
+    char mac[13];
+    for (uint8_t i = 0; i < 6; i++) {
+      uint16_t reg = node.getResponseBuffer(i);
+      mac[i * 2] = reg >> 8;
+      mac[i * 2 + 1] = reg & 0xFF;
+    }
+    mac[12] = '\0';
+    Serial.printf("MAC: %s\n", mac);
+  } else {
+    Serial.printf("MAC read error: 0x%02X\n", result);
+  }
+
+  delay(4000);
 }
 
