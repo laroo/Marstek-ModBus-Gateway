@@ -2,6 +2,12 @@
   "version": 1,
   "author": "Jan-Age Laroo",
   "editor": "wokwi",
+  "serialMonitor": {
+    "collapse": false,
+    "convertEol": true,
+    "display": "always",
+    "newline": "crlf"
+  },
   "parts": [
     { "type": "board-esp32-devkit-c-v4", "id": "esp", "top": 38.4, "left": -43.16, "attrs": {} },
     { "type": "chip-max485-marstek", "id": "chip1", "top": -162.18, "left": -52.8, "attrs": {} },
