@@ -1,16 +1,18 @@
 /**
- * LEDManager.h - ESP32 Swing Gate Controller LED Manager Header
- * 
- * Defines the LEDManager class interface for controlling LED status indicators
- * based on gate state with solid and blinking patterns.
+ * LEDManager.h - Marstek Modbus Gateway LED Manager Header
+ *
+ * Defines the LEDManager class interface for the two status LEDs.
+ * LEDs are wired active-low (anode to VCC via resistor, cathode to GPIO).
+ *
+ * Intended usage:
+ *   - flashGreen() on successful Modbus telemetry polls / commands
+ *   - setError(true) while a Modbus or network error is present (solid red)
  */
 
 #ifndef LEDManager_h
 #define LEDManager_h
 
 #include "Arduino.h"
-#include <arduino-timer.h>
-#include "gate.h"  // Include gate.h for GateState enum
 
 // ============================================================================
 // LED MANAGER CLASS DECLARATION
@@ -19,88 +21,62 @@ class LEDManager {
 public:
     /**
      * Constructor - Initialize LED manager
-     * @param redPin GPIO pin for red LED (gate closed indicator)
-     * @param greenPin GPIO pin for green LED (gate open indicator)
+     * @param redPin GPIO pin for red LED (error indicator)
+     * @param greenPin GPIO pin for green LED (activity indicator)
+     * @param activeLow true when a LOW level turns the LED on
      */
-    LEDManager(int redPin, int greenPin);
-    
+    LEDManager(int redPin, int greenPin, bool activeLow = true);
+
     /**
      * Destructor - Clean up resources
      */
     ~LEDManager();
-    
+
     /**
-     * Initialize LED manager
-     * Must be called after GPIO pins are configured
+     * Initialize LED manager and GPIO pins
      */
     void initialize();
-    
+
     /**
-     * Update LED states and handle blinking
+     * Update LED states (expires one-shot flashes)
      * Should be called regularly in main loop
      */
     void update();
-    
+
     /**
-     * Set LED status based on gate state
-     * @param state Current gate state to display
+     * Brief green flash (e.g. successful telemetry poll or command)
+     * @param ms Flash duration in milliseconds
      */
-    void setStatus(GateState state);
-    
+    void flashGreen(uint16_t ms = 150);
+
     /**
-     * Turn on red LED continuously (gate closed)
+     * Brief red flash (e.g. command received)
+     * @param ms Flash duration in milliseconds
      */
-    void solidRed();
-    
+    void flashRed(uint16_t ms = 150);
+
     /**
-     * Turn on green LED continuously (gate open)
+     * Error indicator: solid red while active
+     * @param active true while the error condition is present
      */
-    void solidGreen();
-    
-    /**
-     * Blink red LED (gate closing)
-     */
-    void blinkRed();
-    
-    /**
-     * Blink green LED (gate opening)
-     */
-    void blinkGreen();
-    
-    /**
-     * Blink both LEDs (unknown state)
-     */
-    void blinkBoth();
-    
+    void setError(bool active);
+
     /**
      * Turn off both LEDs
      */
     void allOff();
 
 private:
-    // GPIO pins
-    int _redPin;        // Red LED pin (closed/closing indicator)
-    int _greenPin;      // Green LED pin (open/opening indicator)
-    
-    // Timer management
-    Timer<> _blinkTimer;    // Timer for blinking control
-    
-    // State tracking
-    bool _blinkState;       // Current blink state (on/off)
-    bool _redBlinking;      // Flag indicating red LED is blinking
-    bool _greenBlinking;    // Flag indicating green LED is blinking
-    bool _bothBlinking;     // Flag indicating both LEDs are blinking
-    bool _initialized;      // Flag indicating initialization complete
-    
-    // Current LED states
-    bool _redLedState;      // Current red LED state
-    bool _greenLedState;    // Current green LED state
-    
-    // Private methods
-    void _setRedLED(bool state);
-    void _setGreenLED(bool state);
-    void _stopBlinking();
-    bool _blinkTimerCallback(void* argument);
+    int _redPin;                // Red LED pin (error indicator)
+    int _greenPin;              // Green LED pin (activity indicator)
+    bool _activeLow;            // LED polarity
+    bool _initialized;          // Flag indicating initialization complete
+    bool _error;                // Error indicator active (red solid)
+    unsigned long _redOffTime;  // millis() when red flash expires (0 = none)
+    unsigned long _greenOffTime;// millis() when green flash expires (0 = none)
+
+    void _writeRed(bool on);
+    void _writeGreen(bool on);
 };
 
 #endif // LEDManager_h

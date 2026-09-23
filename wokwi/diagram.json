@@ -55,7 +55,7 @@
       "id": "text2",
       "top": 182.4,
       "left": 163.2,
-      "attrs": { "text": "RED = monitoring (blink=data transfer)\nGREEN = command" }
+      "attrs": { "text": "GREEN = Modbus activity (blip)\nRED = Modbus/network error" }
     },
     {
       "type": "wokwi-resistor",
@@ -112,8 +112,8 @@
     [ "vcc4:VCC", "r7:2", "red", [ "v0" ] ],
     [ "r7:1", "btn1:1.r", "green", [ "h0" ] ],
     [ "esp:EN", "btn1:1.r", "green", [ "h-76.65", "v-152.8" ] ],
-    [ "led1:C", "esp:5", "green", [ "v18.8", "h-81.2", "v-240" ] ],
-    [ "led6:C", "esp:17", "green", [ "v38", "h-158", "v-249.6" ] ],
+    [ "led1:C", "esp:17", "green", [ "v18.8", "h-81.2", "v-240" ] ],
+    [ "led6:C", "esp:5", "green", [ "v38", "h-158", "v-249.6" ] ],
     [ "vcc6:VCC", "r4:2", "red", [ "v0" ] ],
     [ "r4:1", "btn4:1.r", "yellow", [ "h0" ] ],
     [ "esp:VP", "btn4:1.r", "yellow", [ "h-76.65", "v192", "h-77.6" ] ],
@@ -123,7 +123,7 @@
     [ "vcc1:VCC", "chip1:VCC", "red", [ "v0" ] ],
     [ "esp:33", "chip1:DI", "violet", [ "h-28.65", "v-259.2" ] ],
     [ "esp:32", "chip1:RO", "blue", [ "h-47.85", "v-278.4" ] ],
-    [ "esp:23", "chip1:DE", "yellow", [ "h19.2", "v-76.8", "h-153.6", "v-134.4" ] ],
-    [ "esp:22", "chip1:RE", "green", [ "h28.8", "v-96", "h-144", "v-134.4" ] ]
+    [ "esp:15", "chip1:DE", "yellow", [ "h19.2", "v-76.8", "h-153.6", "v-134.4" ] ],
+    [ "esp:14", "chip1:RE", "green", [ "h28.8", "v-96", "h-144", "v-134.4" ] ]
   ]
 }

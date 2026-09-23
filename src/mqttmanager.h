@@ -1,8 +1,8 @@
 /**
- * MQTTManager.h - ESP32 Swing Gate Controller MQTT Manager Header
- * 
+ * MQTTManager.h - Marstek Modbus Gateway MQTT Manager Header
+ *
  * Defines the MQTTManager class interface for MQTT communication
- * over Ethernet using W5500 shield for remote gate control and status reporting.
+ * over Ethernet for remote battery monitoring and control.
  */
 
 #ifndef MQTTManager_h
@@ -12,13 +12,7 @@
 #include <Network.h>
 #include <PubSubClient.h>
 #include <arduino-timer.h>
-#include "gate.h"  // Include gate.h for GateState enum
-
-#define WOKWI_SIMULATION 1
-
-
-// Forward declaration for WiFi client
-// class EthClient;
+#include "marstek.h"
 
 // ============================================================================
 // MQTT MANAGER CLASS DECLARATION
@@ -30,44 +24,44 @@ public:
      * @param broker MQTT broker hostname
      * @param port MQTT broker port
      * @param clientId Unique client identifier
-     * @param statusTopic Topic for publishing gate status
-     * @param commandTopic Topic for subscribing to gate commands
+     * @param statusTopic Topic for publishing battery status
+     * @param commandTopic Topic for subscribing to commands
      * @param username MQTT username (optional, pass nullptr if not needed)
      * @param password MQTT password (optional, pass nullptr if not needed)
      */
-    MQTTManager(const char* broker, int port, const char* clientId, 
+    MQTTManager(const char* broker, int port, const char* clientId,
                 const char* statusTopic, const char* commandTopic,
                 const char* username = nullptr, const char* password = nullptr);
-    
+
     /**
      * Destructor - Clean up resources
      */
     ~MQTTManager();
-    
+
     /**
-     * Initialize MQTT manager and Ethernet connection
-     * Must be called after GPIO pins are configured
+     * Initialize MQTT manager
+     * @param activeClient Network client to use (Ethernet or WiFi)
      */
     void initialize(NetworkClient* activeClient);
-    
+
     /**
      * Update MQTT connection and handle messages
      * Should be called regularly in main loop
      */
     void update();
-    
+
     /**
      * Connect to MQTT broker
      * @return true if connection successful
      */
     bool connect();
-    
+
     /**
-     * Publish gate status to MQTT broker
+     * Publish battery status to MQTT broker
      * @return true if publish successful
      */
     bool publishStatus();
-    
+
     void setClient(NetworkClient* client);
 
     /**
@@ -75,13 +69,13 @@ public:
      * @return true if connected to broker
      */
     bool isConnected();
-    
+
     /**
-     * Set gate controller reference for command handling
-     * @param gate Pointer to gate controller instance
+     * Set Marstek controller reference for telemetry and command handling
+     * @param marstek Pointer to Marstek controller instance
      */
-    void setGateController(Gate* gate);
-    
+    void setMarstekController(Marstek* marstek);
+
     /**
      * Enable/disable automatic status publishing
      * @param enabled true to enable periodic publishing
@@ -98,28 +92,26 @@ private:
     char _username[64];         // MQTT username (empty if not used)
     char _password[64];         // MQTT password (empty if not used)
     bool _useAuth;              // Flag indicating if authentication is enabled
-    
+
     // Network and MQTT clients
-    NetworkClient* _ethClient;    // WiFi client for network connection
+    NetworkClient* _ethClient;    // Network client for MQTT connection
     PubSubClient* _mqttClient;  // MQTT client for broker communication
-    
+
     // Timer management
     Timer<> _publishTimer;      // Timer for periodic status publishing
     Timer<> _reconnectTimer;    // Timer for connection retry attempts
-    
+
     // State tracking
     bool _initialized;          // Flag indicating initialization complete
-    bool _wifiConnected;        // Flag indicating WiFi connection status
     bool _autoPublishEnabled;   // Flag for automatic status publishing
     unsigned long _lastPublish; // Timestamp of last status publish
     unsigned long _lastConnectionAttempt; // Timestamp of last connection attempt
     int _reconnectAttempts;     // Number of consecutive reconnection attempts
-    
-    // Gate controller reference
-    Gate* _gateController;      // Pointer to gate controller for command handling
-    
+
+    // Marstek controller reference
+    Marstek* _marstek;          // Pointer to Marstek controller for telemetry/commands
+
     // Private methods
-    // bool _initializeWiFi();
     void _onMessageReceived(char* topic, byte* payload, unsigned int length);
     static void _messageCallback(char* topic, byte* payload, unsigned int length);
     bool _publishTimerCallback(void* argument);
@@ -127,8 +119,9 @@ private:
     void _handleCommand(const String& command);
     void _logConnectionStatus();
     void _logCommandReceived(const String& command);
-    static void _sensorChangeCallback();
-    
+    void _publishTelemetry(const char* subTopic, const char* payload);
+    void _publishTelemetry(const char* subTopic, const String& payload);
+
     // Static instance pointer for callback handling
     static MQTTManager* _instance;
 };

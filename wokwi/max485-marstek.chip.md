@@ -57,8 +57,8 @@ Example: `charge=2000` writes `0x55AA` to `42000`, `2000` to `42020` and `1` to 
 
 ### LED feedback
 
-- **Red LED** blinks briefly when a serial command is received.
-- **Green LED** blinks briefly every time telemetry is read.
+- **Green LED** blips briefly on each successful Modbus telemetry poll and executed command.
+- **Red LED** is solid while a Modbus or network error is present.
 - LEDs are active-low.
 
 ## Findings and open issues

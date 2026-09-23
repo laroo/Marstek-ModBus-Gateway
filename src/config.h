@@ -30,16 +30,6 @@
 #define MQTT_PASSWORD nullptr
 #endif
 
-// Boot delay (Requirement 8) - delay in ms before normal initialization after power-on
-#ifndef BOOT_DELAY_MS
-#define BOOT_DELAY_MS 15000
-#endif
-
-// MQTT live sequence recording (Requirement 11)
-// Define MQTT_SEQUENCE_RECORD to publish CSV rows to marstek-modbus-gateway/sequence after
-// every publishStatus() call. Disabled by default; enable via build flag in private_config.ini.
-// #define MQTT_SEQUENCE_RECORD
-
 // MQTT topic prefix
 #ifndef MQTT_TOPIC_STATUS
 #define MQTT_TOPIC_STATUS "marstek-modbus-gateway/status"

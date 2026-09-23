@@ -1,13 +1,16 @@
 /**
- * MQTTManager.cpp - ESP32 Swing Gate Controller MQTT Manager Implementation
+ * MQTTManager.cpp - Marstek Modbus Gateway MQTT Manager Implementation
  *
- * Implementation of MQTT communication over Ethernet for remote gate control
- * and status reporting using W5500 Ethernet shield and PubSubClient library.
+ * Implementation of MQTT communication over Ethernet for remote battery
+ * monitoring and control using PubSubClient.
  */
 
 #include "Arduino.h"
 #include "mqttmanager.h"
 #include <ETH.h>
+
+// Base topic prefix for all published values
+static const char* MQTT_BASE_TOPIC = "marstek-modbus-gateway";
 
 // Static instance pointer for callback handling
 MQTTManager* MQTTManager::_instance = nullptr;
@@ -20,31 +23,31 @@ MQTTManager::MQTTManager(const char* broker, int port, const char* clientId,
                          const char* statusTopic, const char* commandTopic,
                          const char* username, const char* password)
     : _port(port), _ethClient(nullptr), _mqttClient(nullptr),
-      _initialized(false), _wifiConnected(false), _autoPublishEnabled(true),
+      _initialized(false), _autoPublishEnabled(true),
       _lastPublish(0), _lastConnectionAttempt(0), _reconnectAttempts(0),
-      _gateController(nullptr), _useAuth(false) {
-    
+      _marstek(nullptr), _useAuth(false) {
+
     // Copy configuration strings
     strncpy(_broker, broker, sizeof(_broker) - 1);
     _broker[sizeof(_broker) - 1] = '\0';
-    
+
     strncpy(_clientId, clientId, sizeof(_clientId) - 1);
     _clientId[sizeof(_clientId) - 1] = '\0';
-    
+
     strncpy(_statusTopic, statusTopic, sizeof(_statusTopic) - 1);
     _statusTopic[sizeof(_statusTopic) - 1] = '\0';
-    
+
     strncpy(_commandTopic, commandTopic, sizeof(_commandTopic) - 1);
     _commandTopic[sizeof(_commandTopic) - 1] = '\0';
-    
+
     // Copy authentication credentials if provided
     if (username != nullptr && password != nullptr) {
         strncpy(_username, username, sizeof(_username) - 1);
         _username[sizeof(_username) - 1] = '\0';
-        
+
         strncpy(_password, password, sizeof(_password) - 1);
         _password[sizeof(_password) - 1] = '\0';
-        
+
         _useAuth = true;
         Serial.println("[MQTT] Authentication enabled");
     } else {
@@ -52,57 +55,41 @@ MQTTManager::MQTTManager(const char* broker, int port, const char* clientId,
         _password[0] = '\0';
         Serial.println("[MQTT] Authentication disabled");
     }
-    
+
     // Set static instance for callback handling
     _instance = this;
-    
+
     Serial.println("[MQTT] MQTTManager constructor called");
 }
 
 MQTTManager::~MQTTManager() {
     Serial.println("[MQTT] MQTTManager destructor called");
-    
+
     if (_mqttClient) {
         _mqttClient->disconnect();
         delete _mqttClient;
     }
-    
-    if (_ethClient) {
-        delete _ethClient;
-    }
-    
+
     _instance = nullptr;
 }
 
 void MQTTManager::initialize(NetworkClient* activeClient) {
     Serial.println("[MQTT] Initializing MQTT manager...");
-    
-    // Initialize WiFi connection
-    // if (!_initializeWiFi()) {
-    //     Serial.println("[ERROR] Failed to initialize WiFi connection");
-    //     return;
-    // }
-    
-    // Create MQTT client
+
     _ethClient = activeClient;
-    
-    // if (!_ethClient) {
-    //     Serial.println("[ERROR] Failed to create ethernet client");
-    //     return;
-    // }
-    
+
     _mqttClient = new PubSubClient;
     if (!_mqttClient) {
         Serial.println("[ERROR] Failed to create MQTT client");
         return;
     }
-    
+
     // Configure MQTT client
     _mqttClient->setServer(_broker, _port);
     _mqttClient->setCallback(_messageCallback);
-    
+
     _initialized = true;
-    
+
     Serial.print("[MQTT] MQTT manager initialized - Broker: ");
     Serial.print(_broker);
     Serial.print(":");
@@ -113,52 +100,36 @@ void MQTTManager::initialize(NetworkClient* activeClient) {
     Serial.println(_statusTopic);
     Serial.print("[MQTT] Command topic: ");
     Serial.println(_commandTopic);
-    
-    // Attempt initial connection
-    // connect();
+
+    // Schedule periodic status publishing (runs when connected)
+    if (_autoPublishEnabled) {
+        _publishTimer.every(10000, [](void* manager) -> bool {
+            return static_cast<MQTTManager*>(manager)->_publishTimerCallback(nullptr);
+        }, this);
+        Serial.println("[MQTT] Automatic status publishing enabled (10-second interval)");
+    }
 }
 
 void MQTTManager::update() {
-    static unsigned long lastNetworkUpdate = 0;
-    bool debug = false;
-    // if (millis() - lastNetworkUpdate >= 500) {
-    //     lastNetworkUpdate = millis(); 
-    //     debug = true;
-    // }
-
-    
     if (!_initialized) {
-        if (debug) Serial.println("[MQTT] Not initialized...");
         return;
     }
 
     if (!_ethClient) {
-        if (debug) Serial.println("[MQTT] No client...");
         return;
-    };
+    }
 
-    // mqttClient.setClient(*activeClient);
-    // if (!mqttClient.connected()) {
-    //   mqttReconnect();
-    // }
-    // mqttClient.loop();
-    
     // Tick timers
     _publishTimer.tick();
     _reconnectTimer.tick();
 
     // Update the client reference in case connection switched between Ethernet/WiFi
-    if (_ethClient) {
-        if (debug) Serial.println("[MQTT] Setting client...");
-        _mqttClient->setClient(*_ethClient);
-    }
-    
+    _mqttClient->setClient(*_ethClient);
+
     // Handle MQTT client loop
-    if (_mqttClient && _mqttClient->connected()) {
-        if (debug) Serial.println("[MQTT] Looping...");
+    if (_mqttClient->connected()) {
         _mqttClient->loop();
     } else {
-        if (debug) Serial.println("[MQTT] Not connected...");
         // Connection lost, attempt reconnection
         unsigned long currentTime = millis();
         if (currentTime - _lastConnectionAttempt >= 10000) { // Retry every 10 seconds
@@ -173,14 +144,14 @@ bool MQTTManager::connect() {
         Serial.println("[ERROR] MQTT manager not initialized");
         return false;
     }
-    
+
     _lastConnectionAttempt = millis();
-    
+
     Serial.print("[MQTT] Attempting to connect to broker: ");
     Serial.print(_broker);
     Serial.print(":");
     Serial.println(_port);
-    
+
     // Attempt MQTT connection with or without authentication
     bool connected;
     if (_useAuth) {
@@ -190,11 +161,11 @@ bool MQTTManager::connect() {
         Serial.println("[MQTT] Connecting without authentication...");
         connected = _mqttClient->connect(_clientId);
     }
-    
+
     if (connected) {
         Serial.println("[MQTT] Connected to broker successfully");
         _reconnectAttempts = 0;
-        
+
         // Subscribe to command topic
         if (_mqttClient->subscribe(_commandTopic)) {
             Serial.print("[MQTT] Subscribed to command topic: ");
@@ -203,24 +174,19 @@ bool MQTTManager::connect() {
             Serial.print("[ERROR] Failed to subscribe to command topic: ");
             Serial.println(_commandTopic);
         }
-        
-        // Set up periodic status publishing if enabled
-        if (_autoPublishEnabled) {
-            _publishTimer.every(10000, [](void* manager) -> bool {
-                return static_cast<MQTTManager*>(manager)->_publishTimerCallback(nullptr);
-            }, this);
-            Serial.println("[MQTT] Automatic status publishing enabled (10-second interval)");
-        }
-        
+
         _logConnectionStatus();
-        
+
+        // Publish current status immediately after (re)connecting
+        publishStatus();
+
     } else {
         _reconnectAttempts++;
         Serial.print("[ERROR] MQTT connection failed, rc=");
         Serial.print(_mqttClient->state());
         Serial.print(", attempt #");
         Serial.println(_reconnectAttempts);
-        
+
         // Set up reconnection timer if not already running
         if (_reconnectAttempts == 1) {
             _reconnectTimer.every(30000, [](void* manager) -> bool {
@@ -228,30 +194,51 @@ bool MQTTManager::connect() {
             }, this);
         }
     }
-    
+
     return connected;
 }
 
 bool MQTTManager::publishStatus() {
-    Serial.println("[MQTT] publish status...");
     if (!_initialized || !_mqttClient || !_mqttClient->connected()) {
         Serial.println("[ERROR] MQTT not connected, cannot publish status");
         return false;
     }
-    
+
     bool statePublished = false;
     bool clientIdPublished = false;
     bool uptimePublished = false;
+    char buf[24];
 
-    if (_gateController) {
-        statePublished = _mqttClient->publish("marstek-modbus-gateway/state", _gateController->getStateString().c_str());
-        _mqttClient->publish("marstek-modbus-gateway/sensor/lock", _gateController->getSensorLockGate() ? "1" : "0");
-        _mqttClient->publish("marstek-modbus-gateway/sensor/lights", _gateController->getSensorGateLights() ? "1" : "0");
-        _mqttClient->publish("marstek-modbus-gateway/sensor/photo_eye", _gateController->getSensorPhotoEye() ? "1" : "0");
-        _mqttClient->publish("marstek-modbus-gateway/sensor/external_relay", _gateController->getSensorExternalRelay() ? "1" : "0");
-        _mqttClient->publish("marstek-modbus-gateway/in_motion", _gateController->isInMotion() ? "1" : "0");
+    if (_marstek) {
+        const MarstekTelemetry& t = _marstek->getTelemetry();
+        String mode = _marstek->getControlModeString();
+
+        statePublished = _mqttClient->publish(_statusTopic, mode.c_str());
+        _publishTelemetry("modbus/healthy", _marstek->isHealthy() ? "1" : "0");
+
+        snprintf(buf, sizeof(buf), "%.2f", t.batteryVoltage);
+        _publishTelemetry("battery/voltage", buf);
+        snprintf(buf, sizeof(buf), "%.2f", t.batteryCurrent);
+        _publishTelemetry("battery/current", buf);
+        snprintf(buf, sizeof(buf), "%ld", (long)t.batteryPower);
+        _publishTelemetry("battery/power", buf);
+
+        snprintf(buf, sizeof(buf), "%.1f", t.acVoltage);
+        _publishTelemetry("ac/voltage", buf);
+        snprintf(buf, sizeof(buf), "%.2f", t.acCurrent);
+        _publishTelemetry("ac/current", buf);
+        snprintf(buf, sizeof(buf), "%ld", (long)t.acPower);
+        _publishTelemetry("ac/power", buf);
+        snprintf(buf, sizeof(buf), "%.2f", t.acFrequency);
+        _publishTelemetry("ac/frequency", buf);
+
+        snprintf(buf, sizeof(buf), "%.2f", t.softwareVersion / 100.0f);
+        _publishTelemetry("software_version", buf);
+        snprintf(buf, sizeof(buf), "%u", t.firmwareVersion);
+        _publishTelemetry("firmware_version", buf);
+        _publishTelemetry("mac", t.mac);
     } else {
-        statePublished = _mqttClient->publish("marstek-modbus-gateway/state", "MISSING");
+        statePublished = _mqttClient->publish(_statusTopic, "MISSING");
     }
     clientIdPublished = _mqttClient->publish("marstek-modbus-gateway/client_id", _clientId);
     uptimePublished = _mqttClient->publish("marstek-modbus-gateway/uptime", String(millis() / 1000).c_str());
@@ -266,20 +253,6 @@ bool MQTTManager::publishStatus() {
         success = false;
     }
 
-#ifdef MQTT_SEQUENCE_RECORD
-    if (_gateController) {
-        char seqRow[128];
-        snprintf(seqRow, sizeof(seqRow), "%lu,%d,%d,%d,%d,%s",
-            millis(),
-            _gateController->getSensorLockGate()         ? 1 : 0,
-            _gateController->getSensorGateLights()       ? 1 : 0,
-            _gateController->getSensorPhotoEye()         ? 1 : 0,
-            _gateController->getSensorExternalRelay()    ? 1 : 0,
-            _gateController->getStateString().c_str());
-        _mqttClient->publish("marstek-modbus-gateway/sequence", seqRow);
-    }
-#endif
-
     return success;
 }
 
@@ -289,18 +262,11 @@ bool MQTTManager::isConnected() {
 
 void MQTTManager::setClient(NetworkClient* client) {
     _ethClient = client;
-    // Serial.println("[MQTT] Client set");
 }
 
-void MQTTManager::setGateController(Gate* gate) {
-    _gateController = gate;
-    Serial.println("[MQTT] Gate controller reference set");
-    
-    // Register sensor change callback
-    if (_gateController) {
-        _gateController->setSensorChangeCallback(_sensorChangeCallback);
-        Serial.println("[MQTT] Sensor change callback registered with gate");
-    }
+void MQTTManager::setMarstekController(Marstek* marstek) {
+    _marstek = marstek;
+    Serial.println("[MQTT] Marstek controller reference set");
 }
 
 void MQTTManager::setAutoPublish(bool enabled) {
@@ -313,56 +279,15 @@ void MQTTManager::setAutoPublish(bool enabled) {
 // PRIVATE METHODS
 // ============================================================================
 
-// bool MQTTManager::_initializeWiFi() {
-//     Serial.println("[MQTT] Initializing WiFi connection...");
-    
-//     // WiFi credentials for Wokwi simulation
-//     const char* ssid = "Wokwi-GUEST";
-//     const char* password = "";
-    
-//     // Set WiFi mode to station
-//     WiFi.mode(WIFI_STA);
-    
-//     // Begin WiFi connection
-//     WiFi.begin(ssid, password);
-//     Serial.print("[MQTT] Connecting to WiFi network: ");
-//     Serial.println(ssid);
-    
-//     // Wait for connection with timeout
-//     int attempts = 0;
-//     while (WiFi.status() != WL_CONNECTED && attempts < 20) {
-//         delay(500);
-//         Serial.print(".");
-//         attempts++;
-//     }
-    
-//     if (WiFi.status() == WL_CONNECTED) {
-//         _wifiConnected = true;
-//         Serial.println();
-//         Serial.println("[MQTT] WiFi connected successfully!");
-        
-//         // Print network configuration
-//         Serial.print("[MQTT] IP address: ");
-//         Serial.println(WiFi.localIP());
-//         Serial.print("[MQTT] Gateway: ");
-//         Serial.println(WiFi.gatewayIP());
-//         Serial.print("[MQTT] Subnet mask: ");
-//         Serial.println(WiFi.subnetMask());
-//         Serial.print("[MQTT] DNS server: ");
-//         Serial.println(WiFi.dnsIP());
-//         Serial.print("[MQTT] RSSI: ");
-//         Serial.print(WiFi.RSSI());
-//         Serial.println(" dBm");
-//     } else {
-//         _wifiConnected = false;
-//         Serial.println();
-//         Serial.println("[ERROR] Failed to connect to WiFi");
-//         Serial.print("[ERROR] WiFi status: ");
-//         Serial.println(WiFi.status());
-//     }
-    
-//     return _wifiConnected;
-// }
+void MQTTManager::_publishTelemetry(const char* subTopic, const char* payload) {
+    char topic[96];
+    snprintf(topic, sizeof(topic), "%s/%s", MQTT_BASE_TOPIC, subTopic);
+    _mqttClient->publish(topic, payload);
+}
+
+void MQTTManager::_publishTelemetry(const char* subTopic, const String& payload) {
+    _publishTelemetry(subTopic, payload.c_str());
+}
 
 void MQTTManager::_onMessageReceived(char* topic, byte* payload, unsigned int length) {
     // Convert payload to string
@@ -371,12 +296,12 @@ void MQTTManager::_onMessageReceived(char* topic, byte* payload, unsigned int le
     for (unsigned int i = 0; i < length; i++) {
         command += (char)payload[i];
     }
-    
+
     Serial.print("[MQTT] Message received on topic: ");
     Serial.println(topic);
     Serial.print("[MQTT] Payload: ");
     Serial.println(command);
-    
+
     // Handle command if it's on the command topic
     if (strcmp(topic, _commandTopic) == 0) {
         _handleCommand(command);
@@ -390,8 +315,8 @@ void MQTTManager::_messageCallback(char* topic, byte* payload, unsigned int leng
 }
 
 bool MQTTManager::_publishTimerCallback(void* argument) {
-    // Publish current gate status
-    if (_gateController && isConnected()) {
+    // Publish current battery status
+    if (_marstek && isConnected()) {
         publishStatus();
     }
     return true; // Continue periodic publishing
@@ -402,46 +327,26 @@ bool MQTTManager::_reconnectTimerCallback(void* argument) {
     if (!isConnected()) {
         connect();
     }
-    
+
     // Stop timer if connected, continue if still disconnected
     return !isConnected();
 }
 
 void MQTTManager::_handleCommand(const String& command) {
     _logCommandReceived(command);
-    
-    if (!_gateController) {
-        Serial.println("[ERROR] No gate controller available for command handling");
+
+    if (!_marstek) {
+        Serial.println("[ERROR] No Marstek controller available for command handling");
         return;
     }
-    
-    // Parse and execute command (Requirements 7.4, 4.2)
-    String upperCommand = command;
-    upperCommand.toUpperCase();
-    upperCommand.trim();
-    
-    if (upperCommand == "OPEN") {
-        Serial.println("[MQTT] Executing OPEN command");
-        _gateController->openGate();
-    } else if (upperCommand == "CLOSE") {
-        Serial.println("[MQTT] Executing CLOSE command");
-        _gateController->closeGate();
-    } else if (upperCommand == "STOP") {
-        Serial.println("[MQTT] Executing STOP command");
-        _gateController->stopGate();
-    } else if (upperCommand == "TOGGLE") {
-        Serial.println("[MQTT] Executing TOGGLE command");
-        _gateController->toggle();
-    } else {
-        Serial.print("[ERROR] Unknown MQTT command: ");
-        Serial.println(command);
+
+    if (_marstek->handleCommand(command)) {
+        publishStatus();
     }
 }
 
 void MQTTManager::_logConnectionStatus() {
     Serial.println("[MQTT] Connection status:");
-    Serial.print("  WiFi: ");
-    Serial.println(_wifiConnected ? "Connected" : "Disconnected");
     Serial.print("  MQTT: ");
     Serial.println(isConnected() ? "Connected" : "Disconnected");
     Serial.print("  Broker: ");
@@ -450,15 +355,7 @@ void MQTTManager::_logConnectionStatus() {
     Serial.println(_port);
 }
 
-
 void MQTTManager::_logCommandReceived(const String& command) {
     Serial.print("[MQTT] Command received: ");
     Serial.println(command);
-}
-
-void MQTTManager::_sensorChangeCallback() {
-    if (_instance && _instance->_gateController) {
-        Serial.println("[MQTT] Sensor change detected, publishing status...");
-        _instance->publishStatus();
-    }
 }

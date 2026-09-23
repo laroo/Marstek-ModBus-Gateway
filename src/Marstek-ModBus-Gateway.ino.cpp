@@ -1,295 +1,361 @@
-
-/*
- * RS485 Modbus for Marstek Venus-E v2.0
+/**
+ * Marstek ModBus Gateway
  *
+ * ESP32-ETH01 (WT32-ETH01) bridge between a Marstek Venus-E battery
+ * (RS485 / Modbus RTU) and the local network:
+ *   - MQTT telemetry publishing and command input
+ *   - Web dashboard with controls + ElegantOTA
+ *   - LED status indicators (green = Modbus activity, red = error)
+ *   - Serial diagnostics at 115200 baud
  *
- * Wiring:
- *   A ---> RS485 A (RS485 line)
- *   B ---> RS485 B (RS485 line)
- *   DI --> MAX485_TX
- *   DE --> MAX485_DE
- *   RE --> MAX485_RE
- *   RO --> MAX485_RX
- *
- * Reference Example and Source:
- *   https://github.com/openopen114/Arduino_Modbus_viaRS485/blob/master/ArduinoCode/ModbusMaster_viaRS485/ModbusMaster_viaRS485.ino
+ * Serial commands: charge=<watts>, discharge=<watts>, stop
  */
 
+#include "Arduino.h"
+#include <PubSubClient.h>
+#include <arduino-timer.h>
+#include <EthernetESP32.h>
+#include <WiFi.h>
+#include <WebServer.h>
+#include <ElegantOTA.h>
+#include <SPI.h>
+#include <Network.h>
 
-#include <ModbusMaster.h>
-#include <HardwareSerial.h>
+#include "config.h"
+#include "marstek.h"
+#include "ledmanager.h"
+#include "mqttmanager.h"
+#include "webmanager.h"
 
-constexpr int BOARD_485_RX = 32;  // yellow wire to RO (Receiver Output)
-constexpr int BOARD_485_TX = 33;  // brown wire to DI (Driver Input)
-constexpr int MAX485_DE = 23;  // blue wire to DE (Driver Enable)
-constexpr int MAX485_RE = 22;  // pink wire to RE (Receiver Enable)
-constexpr int MODBUS_BAUD_RATE = 115200;
+// WT32-ETH01 internal LAN8720 PHY pins: MDC=23, MDIO=18, power=16
+EMACDriver driver(ETH_PHY_LAN8720, 23, 18, 16);
 
-// Define the UART2 default pins
-#define RX2_PIN 16
-#define TX2_PIN 17
+EthernetClient ethClient;
+WiFiClient wifiClient;
 
-// connection pins
-#define MAX485_RX 32
-#define MAX485_TX 33
-// #define MAX485_DE 23
-// #define MAX485_RE 22
+// Pointer to the active client (Ethernet or WiFi)
+NetworkClient* activeClient = nullptr;
 
-// led to indicate the action
-#define LED_RED 5
-#define LED_GREEN 17
+// Connection check result (used by network event handler)
+int connectionStatus = 0;
 
-// number of retry
-#define RETRY 20
+// ============================================================================
+// CONFIGURATION STRUCTURE
+// ============================================================================
+struct Config {
+  char clientId[32]; // Random client ID generated at startup
 
-const String firmware_version = "v0.0.1";
-// #define Serial485 Serial2
-HardwareSerial& Serial485 = Serial2;
+  // Timing Settings
+  unsigned long telemetryInterval = 4000;  // Modbus telemetry poll interval
+  unsigned long publishInterval = 10000;   // MQTT status publish interval
 
-ModbusMaster node;
+  // GPIO Pins (active-low LEDs, per PCB schematic)
+  int redLedPin = 17;
+  int greenLedPin = 5;
+};
 
-unsigned long lastTelemetryMs = 0;
-constexpr unsigned long TELEMETRY_INTERVAL_MS = 4000;
+// ============================================================================
+// GLOBAL VARIABLES
+// ============================================================================
+Config config;
+Marstek *marstek = nullptr;
+LEDManager *ledManager = nullptr;
+MQTTManager *mqttManager = nullptr;
 
-constexpr unsigned long LED_BLINK_MS = 150;
-unsigned long redLedOffTime = 0;
-unsigned long greenLedOffTime = 0;
+// Timer for main loop management
+auto mainTimer = timer_create_default();
 
-// Callback functions to toggle RS485 transmit/receive direction
-void preTransmission() {
-  // Set to Transmit mode
-  // Serial.println(F("[RS485] preTransmission"));
-  digitalWrite(MAX485_DE, HIGH);
-  digitalWrite(MAX485_RE, HIGH);
-}
+// ============================================================================
+// NETWORK EVENT HANDLER
+// ============================================================================
+// WARNING: This function is called from a separate FreeRTOS task (thread)!
+void onNetworkEvent(arduino_event_id_t event, arduino_event_info_t info) {
+  Serial.printf("[Network-event] event: %d\n", event);
 
-void postTransmission() {
-  // Set to Receive mode
-  // Serial.println(F("[RS485] postTransmission"));
-  digitalWrite(MAX485_DE, LOW);
-  digitalWrite(MAX485_RE, LOW);
-}
-
-void triggerRedLed() {
-  digitalWrite(LED_RED, LOW); // active low
-  redLedOffTime = millis() + LED_BLINK_MS;
-}
-
-void triggerGreenLed() {
-  digitalWrite(LED_GREEN, LOW); // active low
-  greenLedOffTime = millis() + LED_BLINK_MS;
-}
-
-void updateLeds() {
-  unsigned long now = millis();
-  if (redLedOffTime && now >= redLedOffTime) {
-    digitalWrite(LED_RED, HIGH);
-    redLedOffTime = 0;
-  }
-  if (greenLedOffTime && now >= greenLedOffTime) {
-    digitalWrite(LED_GREEN, HIGH);
-    greenLedOffTime = 0;
-  }
-}
-
-bool writeModbusRegister(uint16_t address, uint16_t value) {
-  uint8_t result = node.writeSingleRegister(address, value);
-  if (result != node.ku8MBSuccess) {
-    Serial.printf("Modbus write 0x%04X = 0x%04X failed: 0x%02X\n", address, value, result);
-    return false;
-  }
-  return true;
-}
-
-void setChargePower(uint16_t watts) {
-  if (watts > 2500) {
-    Serial.println("Charge power must be 0-2500 W");
-    return;
-  }
-
-  Serial.printf("Starting charge at %u W\n", watts);
-  if (!writeModbusRegister(0xA410, 0x55AA)) return; // enable RS485 control mode
-  if (!writeModbusRegister(0xA424, watts)) return;    // charge power
-  if (!writeModbusRegister(0xA41A, 0x0001)) return;   // charge mode
-  Serial.println("Charge active");
-}
-
-void setDischargePower(uint16_t watts) {
-  if (watts > 2500) {
-    Serial.println("Discharge power must be 0-2500 W");
-    return;
-  }
-
-  Serial.printf("Starting discharge at %u W\n", watts);
-  if (!writeModbusRegister(0xA410, 0x55AA)) return; // enable RS485 control mode
-  if (!writeModbusRegister(0xA425, watts)) return;  // discharge power
-  if (!writeModbusRegister(0xA41A, 0x0002)) return;   // discharge mode
-  Serial.println("Discharge active");
-}
-
-void stopControl() {
-  Serial.println("Stopping control");
-  writeModbusRegister(0xA41A, 0x0000); // stop charge/discharge
-  writeModbusRegister(0xA410, 0x55BB); // disable RS485 control mode
-  Serial.println("Control stopped");
-}
-
-void handleSerialCommand(const String& cmd) {
-  triggerRedLed();
-
-  if (cmd.startsWith("charge=")) {
-    int watts = cmd.substring(7).toInt();
-    if (watts < 0 || watts > 2500) {
-      Serial.println("Charge power must be 0-2500 W");
-      return;
-    }
-    if (watts == 0) {
-      stopControl();
-    } else {
-      setChargePower((uint16_t)watts);
-    }
-  } else if (cmd.startsWith("discharge=")) {
-    int watts = cmd.substring(10).toInt();
-    if (watts < 0 || watts > 2500) {
-      Serial.println("Discharge power must be 0-2500 W");
-      return;
-    }
-    if (watts == 0) {
-      stopControl();
-    } else {
-      setDischargePower((uint16_t)watts);
-    }
-  } else if (cmd == "stop") {
-    stopControl();
-  } else {
-    Serial.println("Unknown command. Use: charge=<watts>, discharge=<watts>, stop");
+  switch (event) {
+    case ARDUINO_EVENT_ETH_START:
+      Serial.println("[ETH] Ethernet started");
+      break;
+    case ARDUINO_EVENT_ETH_STOP:
+      Serial.println("[ETH] Ethernet stopped");
+      break;
+    case ARDUINO_EVENT_ETH_CONNECTED:
+      Serial.println("[ETH] Ethernet connected - Link UP");
+      break;
+    case ARDUINO_EVENT_ETH_DISCONNECTED:
+      Serial.println("[ETH] Ethernet disconnected - Link DOWN");
+      connectionStatus = 0;
+      activeClient = nullptr;
+      break;
+    case ARDUINO_EVENT_ETH_GOT_IP:
+      Serial.print("[ETH] Obtained IP address: ");
+      Serial.println(IPAddress(info.got_ip.ip_info.ip.addr));
+      Serial.print("[ETH] Gateway: ");
+      Serial.println(IPAddress(info.got_ip.ip_info.gw.addr));
+      Serial.print("[ETH] Netmask: ");
+      Serial.println(IPAddress(info.got_ip.ip_info.netmask.addr));
+      connectionStatus = 1;
+      activeClient = &ethClient;
+      break;
+    case ARDUINO_EVENT_ETH_GOT_IP6:
+      Serial.println("[ETH] Ethernet IPv6 is preferred");
+      break;
+    case ARDUINO_EVENT_WIFI_STA_START:
+      Serial.println("[WiFi] WiFi client started");
+      break;
+    case ARDUINO_EVENT_WIFI_STA_STOP:
+      Serial.println("[WiFi] WiFi client stopped");
+      break;
+    case ARDUINO_EVENT_WIFI_STA_CONNECTED:
+      Serial.println("[WiFi] Connected to access point");
+      break;
+    case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
+      Serial.println("[WiFi] Disconnected from WiFi access point");
+      if (connectionStatus == 2) {
+        connectionStatus = 0;
+        activeClient = nullptr;
+      }
+      break;
+    case ARDUINO_EVENT_WIFI_STA_GOT_IP:
+      Serial.print("[WiFi] Obtained IP address: ");
+      Serial.println(IPAddress(info.got_ip.ip_info.ip.addr));
+      connectionStatus = 2;
+      activeClient = &wifiClient;
+      break;
+    case ARDUINO_EVENT_WIFI_STA_LOST_IP:
+      Serial.println("[WiFi] Lost IP address");
+      if (connectionStatus == 2) {
+        connectionStatus = 0;
+        activeClient = nullptr;
+      }
+      break;
+    default:
+      break;
   }
 }
 
-void readTelemetry() {
-  triggerGreenLed();
+// ============================================================================
+// FUNCTION DECLARATIONS
+// ============================================================================
+int checkConnection();
+bool checkConnectionCallback(void *);
+bool reportConnectionStatusCallback(void *);
+NetworkClient* getActiveClient();
 
-  uint8_t result;
-
-  // Read battery voltage, current and power (registers 32100..32103)
-  result = node.readHoldingRegisters(0x7D64, 4);
-  if (result == node.ku8MBSuccess) {
-    uint16_t voltage_raw = node.getResponseBuffer(0);  // 32100, 0.01 V
-    uint16_t current_raw = node.getResponseBuffer(1);  // 32101, 0.01 A (s16)
-    uint16_t power_high  = node.getResponseBuffer(2);  // 32102, s32 high word
-    uint16_t power_low   = node.getResponseBuffer(3);  // 32103, s32 low word
-
-    float voltage = voltage_raw / 100.0f;
-    float current = (int16_t)current_raw / 100.0f;
-    int32_t power = ((int32_t)(int16_t)power_high << 16) | power_low;
-
-    Serial.printf("Vbatt: %.2f V\n", voltage);
-    Serial.printf("Ibatt: %.2f A\n", current);
-    Serial.printf("Pbatt: %ld W\n", power);
-  } else {
-    Serial.printf("Battery read error: 0x%02X\n", result);
-  }
-
-  // Read software version (30400 / 0x76C0), u16, 0.01 scale
-  result = node.readHoldingRegisters(0x76C0, 1);
-  if (result == node.ku8MBSuccess) {
-    uint16_t sw_version = node.getResponseBuffer(0);
-    Serial.printf("Software version: 0x%04X (%.2f)\n", sw_version, sw_version / 100.0f);
-  } else {
-    Serial.printf("Software version read error: 0x%02X\n", result);
-  }
-
-  // Read firmware version (30401 / 0x76C1), u16
-  result = node.readHoldingRegisters(0x76C1, 1);
-  if (result == node.ku8MBSuccess) {
-    uint16_t fw_version = node.getResponseBuffer(0);
-    Serial.printf("Firmware version: 0x%04X (%u)\n", fw_version, fw_version);
-  } else {
-    Serial.printf("Firmware version read error: 0x%02X\n", result);
-  }
-
-  // Read device MAC address (30402 / 0x76C2), char[12] / 6 registers
-  result = node.readHoldingRegisters(0x76C2, 6);
-  if (result == node.ku8MBSuccess) {
-    char mac[13];
-    for (uint8_t i = 0; i < 6; i++) {
-      uint16_t reg = node.getResponseBuffer(i);
-      mac[i * 2] = reg >> 8;
-      mac[i * 2 + 1] = reg & 0xFF;
-    }
-    mac[12] = '\0';
-    Serial.printf("MAC: %s\n", mac);
-  } else {
-    Serial.printf("MAC read error: 0x%02X\n", result);
-  }
-
-  // Read AC measurements (32200..32204): voltage, current, power, frequency
-  result = node.readHoldingRegisters(0x7DC8, 5);
-  if (result == node.ku8MBSuccess) {
-    uint16_t ac_voltage_raw = node.getResponseBuffer(0);  // 32200, 0.1 V
-    uint16_t ac_current_raw = node.getResponseBuffer(1);  // 32201, 0.01 A
-    uint16_t ac_power_high  = node.getResponseBuffer(2);  // 32202, s32 high word
-    uint16_t ac_power_low   = node.getResponseBuffer(3);  // 32203, s32 low word
-    uint16_t ac_freq_raw    = node.getResponseBuffer(4);  // 32204, 0.01 Hz
-
-    float ac_voltage = ac_voltage_raw / 10.0f;
-    float ac_current = ac_current_raw / 100.0f;
-    int32_t ac_power = ((int32_t)(int16_t)ac_power_high << 16) | ac_power_low;
-    float ac_frequency = ac_freq_raw / 100.0f;
-
-    Serial.printf("Vac: %.1f V\n", ac_voltage);
-    Serial.printf("Iac: %.2f A\n", ac_current);
-    Serial.printf("Pac: %ld W\n", ac_power);
-    Serial.printf("Fac: %.2f Hz\n", ac_frequency);
-  } else {
-    Serial.printf("AC read error: 0x%02X\n", result);
-  }
-}
-
-void setup(void) {
-  pinMode(MAX485_DE, OUTPUT);
-  pinMode(MAX485_RE, OUTPUT);
-
-  // Init in receive mode
-  digitalWrite(MAX485_DE, LOW);
-  digitalWrite(MAX485_RE, LOW);
-
-  pinMode(LED_RED, OUTPUT);
-  pinMode(LED_GREEN, OUTPUT);
-  digitalWrite(LED_RED, HIGH);  // Active low
-  digitalWrite(LED_GREEN, HIGH); // Active low
-
+// ============================================================================
+// SETUP FUNCTION
+// ============================================================================
+void setup() {
+  // Initialize serial communication at 115200 baud
   Serial.begin(115200);
-  Serial.println(F("[RS485] Init serial..."));
+  delay(100); // Allow serial to initialize
 
-  Serial485.begin(MODBUS_BAUD_RATE, SERIAL_8N1, BOARD_485_RX, BOARD_485_TX);
+  Serial.println("[INIT] Marstek ModBus Gateway starting...");
+  Serial.print("[INIT] Free heap: ");
+  Serial.print(ESP.getFreeHeap());
+  Serial.println(" bytes");
 
-  // Modbus slave ID 1
-  node.begin(1, Serial485);
+  // Generate random client ID for MQTT
+  randomSeed(analogRead(0));
+  sprintf(config.clientId, "marstek_gw_%06X", random(0xFFFFFF));
+  Serial.print("[INIT] MQTT Client ID: ");
+  Serial.println(config.clientId);
 
-  // Callbacks allow us to configure the RS485 transceiver correctly
-  node.preTransmission(preTransmission);
-  node.postTransmission(postTransmission);
+  // Initialize LED Manager
+  ledManager = new LEDManager(config.redLedPin, config.greenLedPin);
+  if (ledManager) {
+    ledManager->initialize();
+    Serial.println("[INIT] LED manager initialized");
+  } else {
+    Serial.println("[ERROR] Failed to initialize LED manager");
+  }
 
-  Serial.println(F("Ready. Commands: charge=<watts>, discharge=<watts>, stop"));
+  // Initialize Marstek Modbus controller
+  marstek = new Marstek();
+  if (marstek) {
+    marstek->initialize(config.telemetryInterval);
+    Serial.println("[INIT] Marstek controller created and initialized");
+  } else {
+    Serial.println("[ERROR] Failed to create Marstek controller");
+  }
+
+  // Register network event listener
+  Network.onEvent(onNetworkEvent);
+  Serial.println("[INIT] Network event listener registered");
+
+  Ethernet.init(driver);
+
+  Serial.println("Initialize Ethernet with DHCP:");
+  if (Ethernet.begin()) {
+    Serial.print("  DHCP assigned IP ");
+    Serial.println(Ethernet.localIP());
+  } else {
+    Serial.println("Failed to configure Ethernet using DHCP");
+  }
+
+  // Check for Ethernet hardware present
+  if (Ethernet.hardwareStatus() == EthernetNoHardware) {
+    Serial.println("Ethernet hardware was not found.");
+  }
+  if (Ethernet.linkStatus() == LinkOFF) {
+    Serial.println("Ethernet cable is not connected.");
+  }
+
+  // Initialize MQTT Manager
+  mqttManager = new MQTTManager(MQTT_BROKER, MQTT_PORT,
+                                config.clientId, MQTT_TOPIC_STATUS,
+                                MQTT_TOPIC_COMMAND, MQTT_USERNAME, MQTT_PASSWORD);
+  if (mqttManager) {
+    mqttManager->initialize(activeClient);
+
+    // Set Marstek controller reference for telemetry and command handling
+    if (marstek) {
+      mqttManager->setMarstekController(marstek);
+    }
+
+    Serial.println("[INIT] MQTT manager initialized");
+  } else {
+    Serial.println("[ERROR] Failed to initialize MQTT manager");
+  }
+
+  Serial.println("[INIT] Setting up web server...");
+  setupWebServer(config.clientId);
+
+  // Schedule connection check every 5 seconds
+  mainTimer.every(5000, checkConnectionCallback);
+  Serial.println("[INIT] Connection check scheduled every 5 seconds");
+
+  // Schedule connection status reporting every 5 seconds
+  mainTimer.every(5000, reportConnectionStatusCallback);
+  Serial.println("[INIT] Connection status reporting scheduled every 5 seconds");
+
+  Serial.println("[INIT] System initialization complete");
+  Serial.println("[INIT] Commands: charge=<watts>, discharge=<watts>, stop");
+  Serial.println("======================================");
 }
 
-void loop() {
-  updateLeds();
+// Timer callback for connection checking
+bool checkConnectionCallback(void *) {
+  connectionStatus = checkConnection();
+  return true; // Repeat the timer
+}
 
+// Timer callback for reporting connection status
+bool reportConnectionStatusCallback(void *) {
+  if (connectionStatus == 1) {
+    Serial.println("Connected to Ethernet");
+  }
+  else if (connectionStatus == 2) {
+    Serial.println("Connected to Wi-Fi");
+  }
+  else {
+    Serial.println("Not Connected");
+  }
+  return true; // Repeat the timer
+}
+
+int checkConnection() {
+  // Check if Ethernet is available
+  if (ethClient.connected() && (Ethernet.linkStatus() == LinkON)) {
+    activeClient = &ethClient;
+    return 1;
+  }
+  else if (Ethernet.linkStatus() == LinkON) {
+    // Use Ethernet connection
+    if (!ethClient.connected()) {
+      Serial.println("Connecting via Ethernet...");
+      WiFi.disconnect();
+      activeClient = &ethClient;
+      return 1;
+    }
+  }
+
+  if (WiFi.status() == WL_CONNECTED) {
+    activeClient = &wifiClient;
+    return 2;
+  }
+
+  // Use Wi-Fi connection (Wokwi simulation has no Ethernet)
+  WiFi.begin("Wokwi-GUEST", "", 6);
+  Serial.println("Connecting via Wi-Fi...");
+  for (int i = 0; i < 50; i++) {
+    if (WiFi.status() == WL_CONNECTED) {
+      Serial.println(" CONNECTED");
+      break;
+    }
+    delay(100);
+    Serial.print(".");
+  }
+
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("Connected to Wi-Fi");
+    activeClient = &wifiClient;
+    return 2;
+  }
+
+  Serial.println("Wi-Fi not Connected");
+  activeClient = nullptr;
+  return 0;
+}
+
+// ============================================================================
+// MAIN LOOP
+// ============================================================================
+void loop() {
+
+  // Handle serial commands
   if (Serial.available()) {
     String cmd = Serial.readStringUntil('\n');
     cmd.trim();
-    if (cmd.length() > 0) {
-      handleSerialCommand(cmd);
+    if (cmd.length() > 0 && marstek) {
+      if (marstek->handleCommand(cmd) && ledManager) {
+        ledManager->flashGreen();
+      }
     }
   }
 
-  unsigned long now = millis();
-  if (now - lastTelemetryMs >= TELEMETRY_INTERVAL_MS) {
-    lastTelemetryMs = now;
-    readTelemetry();
+  // Update Marstek controller (polls telemetry on interval)
+  if (marstek) {
+    if (marstek->update() && ledManager) {
+      ledManager->flashGreen();
+    }
   }
 
-  delay(100);
+  // Network-dependent services
+  if (activeClient && connectionStatus > 0) {
+    loopWebServer();
+
+    // Update MQTT manager
+    if (mqttManager) {
+      mqttManager->setClient(activeClient);
+      mqttManager->update();
+    }
+  }
+
+  // Error indicator: red while Modbus unhealthy or no network
+  if (ledManager) {
+    bool modbusError = marstek && !marstek->isHealthy();
+    bool networkError = connectionStatus == 0;
+    ledManager->setError(modbusError || networkError);
+    ledManager->update();
+  }
+
+  // Tick main timer for any scheduled tasks
+  mainTimer.tick();
+
+  // Small delay to prevent excessive CPU usage
+  delay(10);
+}
+
+// ============================================================================
+// GET ACTIVE CLIENT
+// ============================================================================
+/**
+ * Returns a pointer to the active network client (Ethernet or WiFi)
+ * based on the current connection status.
+ *
+ * @return NetworkClient* Pointer to active client, or nullptr if no connection
+ */
+NetworkClient* getActiveClient() {
+  return activeClient;
 }
