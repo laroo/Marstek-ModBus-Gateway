@@ -38,6 +38,8 @@ Marstek::Marstek()
     : _controlMode(MarstekControlMode::Idle),
       _telemetryIntervalMs(4000),
       _lastTelemetryMs(0),
+      _consecutiveErrors(0),
+      _offline(false),
       _healthy(false),
       _initialized(false) {
     Serial.println("[MARSTEK] Marstek constructor called");
@@ -71,8 +73,19 @@ bool Marstek::update() {
     }
 
     unsigned long now = millis();
-    if (_lastTelemetryMs == 0 || now - _lastTelemetryMs >= _telemetryIntervalMs) {
+    unsigned long interval = _offline ? OFFLINE_RETRY_MS : _telemetryIntervalMs;
+    if (_lastTelemetryMs == 0 || now - _lastTelemetryMs >= interval) {
         _lastTelemetryMs = now;
+
+        if (_offline) {
+            // Cheap probe: single register read until the slave responds
+            if (_probe()) {
+                _markOnline();
+                return true;
+            }
+            return false;
+        }
+
         _pollTelemetry();
         return _healthy;
     }
@@ -127,6 +140,7 @@ bool Marstek::setChargePower(uint16_t watts) {
     if (!_writeRegister(REG_CHARGE_POWER, watts)) return false;
     if (!_writeRegister(REG_FORCE_MODE, FORCE_CHARGE)) return false;
     _controlMode = MarstekControlMode::Charging;
+    _markOnline();
     Serial.println("[MARSTEK] Charge active");
     return true;
 }
@@ -142,6 +156,7 @@ bool Marstek::setDischargePower(uint16_t watts) {
     if (!_writeRegister(REG_DISCHARGE_POWER, watts)) return false;
     if (!_writeRegister(REG_FORCE_MODE, FORCE_DISCHARGE)) return false;
     _controlMode = MarstekControlMode::Discharging;
+    _markOnline();
     Serial.println("[MARSTEK] Discharge active");
     return true;
 }
@@ -152,6 +167,7 @@ bool Marstek::stopControl() {
     ok = _writeRegister(REG_RS485_CONTROL, CTRL_MODE_DISABLE) && ok;
     if (ok) {
         _controlMode = MarstekControlMode::Idle;
+        _markOnline();
         Serial.println("[MARSTEK] Control stopped");
     }
     return ok;
@@ -240,8 +256,40 @@ void Marstek::_pollTelemetry() {
     if (ok) {
         _telemetry.lastUpdateMs = millis();
         _telemetry.valid = true;
+        _consecutiveErrors = 0;
+    } else {
+        _consecutiveErrors++;
+        if (_consecutiveErrors >= MAX_CONSECUTIVE_ERRORS && !_offline) {
+            _offline = true;
+            Serial.println("[MARSTEK] No Modbus slave responding, going offline"
+                           " (probe every 30 s)");
+        }
     }
     _healthy = ok;
+}
+
+bool Marstek::_probe() {
+    uint8_t result = _node.readHoldingRegisters(REG_BATTERY_BASE, 4);
+    if (result == _node.ku8MBSuccess) {
+        Serial.println("[MARSTEK] Modbus probe succeeded");
+        return true;
+    }
+    Serial.printf("[MARSTEK] Modbus probe failed: 0x%02X\n", result);
+    return false;
+}
+
+void Marstek::_markOnline() {
+    _consecutiveErrors = 0;
+    _healthy = true;
+    if (_offline) {
+        _offline = false;
+        _lastTelemetryMs = 0; // force a full poll on next update()
+        Serial.println("[MARSTEK] Modbus slave responding, telemetry resumed");
+    }
+}
+
+void Marstek::setIdleCallback(void (*callback)()) {
+    _node.idle(callback);
 }
 
 bool Marstek::_writeRegister(uint16_t address, uint16_t value) {

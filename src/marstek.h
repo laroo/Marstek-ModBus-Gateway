@@ -109,16 +109,37 @@ public:
      */
     bool isHealthy() const { return _healthy; }
 
+    /**
+     * Offline mode: true when repeated poll failures indicate no Modbus
+     * slave is connected. In offline mode only a cheap probe is sent
+     * every OFFLINE_RETRY_MS until the slave responds again.
+     */
+    bool isOffline() const { return _offline; }
+
+    /**
+     * Register an idle callback invoked while waiting for Modbus replies.
+     * Use it to keep network services responsive during blocking reads.
+     * @param callback Function called during Modbus RX idle time
+     */
+    void setIdleCallback(void (*callback)());
+
 private:
+    static constexpr uint8_t MAX_CONSECUTIVE_ERRORS = 5;
+    static constexpr unsigned long OFFLINE_RETRY_MS = 30000;
+
     ModbusMaster _node;
     MarstekTelemetry _telemetry;
     MarstekControlMode _controlMode;
     unsigned long _telemetryIntervalMs;
     unsigned long _lastTelemetryMs;
+    uint8_t _consecutiveErrors;
+    bool _offline;
     bool _healthy;
     bool _initialized;
 
     void _pollTelemetry();
+    bool _probe();
+    void _markOnline();
     bool _writeRegister(uint16_t address, uint16_t value);
 
     // MAX485 direction control (C-style callbacks for ModbusMaster)

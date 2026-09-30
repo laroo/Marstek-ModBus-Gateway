@@ -141,6 +141,7 @@ int checkConnection();
 bool checkConnectionCallback(void *);
 bool reportConnectionStatusCallback(void *);
 NetworkClient* getActiveClient();
+void pumpServices();
 
 // ============================================================================
 // SETUP FUNCTION
@@ -174,6 +175,8 @@ void setup() {
   marstek = new Marstek();
   if (marstek) {
     marstek->initialize(config.telemetryInterval);
+    // Keep web/MQTT/LEDs responsive while blocking on Modbus replies
+    marstek->setIdleCallback(pumpServices);
     Serial.println("[INIT] Marstek controller created and initialized");
   } else {
     Serial.println("[ERROR] Failed to create Marstek controller");
@@ -264,7 +267,9 @@ int checkConnection() {
     // Use Ethernet connection
     if (!ethClient.connected()) {
       Serial.println("Connecting via Ethernet...");
-      WiFi.disconnect();
+      if (WiFi.status() == WL_CONNECTED) {
+        WiFi.disconnect();
+      }
       activeClient = &ethClient;
       return 1;
     }
@@ -358,4 +363,26 @@ void loop() {
  */
 NetworkClient* getActiveClient() {
   return activeClient;
+}
+
+// ============================================================================
+// SERVICE PUMP (Modbus idle callback)
+// ============================================================================
+/**
+ * Services network/LED duties while Marstek blocks waiting for a Modbus
+ * reply (called via ModbusMaster's idle callback from inside
+ * marstek->update()). Keeps the web server and MQTT responsive even when
+ * the RS485 bus is dead.
+ */
+void pumpServices() {
+  if (activeClient && connectionStatus > 0) {
+    loopWebServer();
+    if (mqttManager) {
+      mqttManager->setClient(activeClient);
+      mqttManager->update();
+    }
+  }
+  if (ledManager) {
+    ledManager->update();
+  }
 }
