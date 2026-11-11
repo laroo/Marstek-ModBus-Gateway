@@ -481,6 +481,9 @@
   (name "R5") (value "{{RESISTANCE}}")
   (lock_assembly false)
   (attribute "RESISTANCE" (type resistance) (unit ohm) (value "2.2"))
+  (device a0e021c0-90ab-4415-802e-40a847f682c8
+   (variant 9289fc78-84fb-4ae6-8329-793579d3fccd)
+  )
   (signal 3452d36e-1ce8-4b7c-8e5b-90c2e4929ed8 (net 9a0463b2-c6aa-4bb2-941c-8601ff6950de))
   (signal ad623f98-9e73-49c3-9404-f7cfa99d17cd (net 0187de44-518e-4366-9b11-4789a7857fc0))
  )
