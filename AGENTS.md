@@ -13,6 +13,8 @@ and `enclosure/` directories.
 - `specs/Modbus Table - Modbus Datasheet.csv` — Modbus register map
 - `specs/Duravolt-Plug-in-Battery-Modbus.pdf` — protocol reference
 - `specs/2._Definition_of_Product_RS-485_Interface.pdf` — product interface spec
+- `specs/dispatcher-requirements.md` — requirements for the planned
+  multi-battery MQTT dispatcher (Docker service controlling 3 gateways)
 - `specs/requirements.md`, `specs/design.md`, `specs/tasks.md` — (empty placeholders)
 
 ## Source Code
