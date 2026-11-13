@@ -78,9 +78,42 @@ public:
      *   charge=<0-2500>   start forcible charge (0 = stop)
      *   discharge=<0-2500> start forcible discharge (0 = stop)
      *   stop              stop charge/discharge, disable RS485 control
+     *   scan              probe slave IDs 1-10 for a response
+     *   scan=<first>-<last> probe a custom slave ID range (1-247)
+     *   raw=<id>          send reg-32100 read to <id>, hex-dump raw reply
+     *   rxdump[=<ms>]     passively dump RS485 RX bytes (default 2000 ms)
+     *   echotest          TX with receiver on: frame should echo back
      * @return true if the command was recognized and executed
      */
     bool handleCommand(const String& cmd);
+
+    /**
+     * Scan a range of Modbus slave IDs, reading register 32100 on each.
+     * Prints the result per ID over Serial and restores the configured
+     * slave ID when done. Each unanswered read blocks ~2 s.
+     * @return true if at least one slave responded
+     */
+    bool scanSlaveIds(uint8_t firstId = 1, uint8_t lastId = 10);
+
+    /**
+     * Send a raw read-holding-registers request for register 32100 to the
+     * given slave ID and hex-dump all received bytes over Serial.
+     * Bypasses ModbusMaster checks — for bus diagnostics.
+     */
+    void rawRead(uint8_t slaveId);
+
+    /**
+     * Passively listen on the RS485 line for the given duration and
+     * hex-dump every received byte over Serial. Transmits nothing.
+     */
+    void rxDump(unsigned long durationMs = 2000);
+
+    /**
+     * Transmit a Modbus frame with the receiver left ENABLED (/RE low),
+     * then dump the received bytes. A healthy driver/bus path echoes the
+     * transmitted frame back; silence means the A/B driver never drove.
+     */
+    void echoTest();
 
     /**
      * Start forcible charge at the given power.
@@ -130,6 +163,7 @@ private:
     ModbusMaster _node;
     MarstekTelemetry _telemetry;
     MarstekControlMode _controlMode;
+    void (*_idleCallback)() = nullptr;
     unsigned long _telemetryIntervalMs;
     unsigned long _lastTelemetryMs;
     uint8_t _consecutiveErrors;

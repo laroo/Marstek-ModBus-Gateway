@@ -53,9 +53,28 @@ The `esp32_wokwi` environment has its own hardcoded build flags for simulation.
 
 ## How to Compile
 
-1. Activate the Python virtual environment: `source .venv/bin/activate`
-2. Build all environments: `pio run`
-3. Build a specific environment: `pio run -e esp32` or `pio run -e esp32_wokwi`
+There is no project `.venv`; `pio` lives in the global PlatformIO
+environment: `~/.platformio/penv/Scripts/pio` (not on PATH by default —
+the VS Code / Windsurf PlatformIO extension uses it too).
+
+- Build all environments: `~/.platformio/penv/Scripts/pio run`
+- Build a specific environment: `pio run -e esp32` or `pio run -e esp32_wokwi`
+
+### Gotcha: pioarduino core version
+
+The pioarduino `espressif32` platform requires Core `>=6.2.0`, but
+`pioarduino==6.2.0.post1` (PyPI) reports `6.2.0-post.1`, which the semver
+compat check treats as a prerelease `< 6.2.0` → `IncompatiblePlatform`
+error and the platform is removed right after install. If this happens,
+pin the core back down:
+
+```
+~/.platformio/penv/Scripts/python -m pip install "pioarduino==6.2.0"
+```
+
+The platform's open-ended `pioarduino>=6.1.19` bootstrap can re-resolve
+to the broken `.post1` on a future reinstall — re-run the pin if the
+error returns.
 
 ## Wokwi Simulation
 
@@ -70,6 +89,7 @@ The `esp32_wokwi` environment has its own hardcoded build flags for simulation.
 
 - **Platform**: ESP32 (espressif32 via pioarduino)
 - **Framework**: Arduino
-- **Python**: 3.13 (see `.python-version`), venv in `.venv/`
+- **Python**: 3.13 (see `.python-version`); PlatformIO core in `~/.platformio/penv/`
+  (pioarduino fork, pin `pioarduino==6.2.0` — see "How to Compile")
 - **Board**: esp32dev (build), WT32-ETH01 (real hardware)
 - **Serial baud rate**: 115200 (both USB monitor and RS485/Modbus, 8N1)

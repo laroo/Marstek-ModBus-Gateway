@@ -123,10 +123,187 @@ bool Marstek::handleCommand(const String& rawCmd) {
         return stopControl();
     }
 
+    if (cmd.startsWith("raw=")) {
+        rawRead((uint8_t)cmd.substring(4).toInt());
+        return true;
+    }
+
+    if (cmd == "echotest") {
+        echoTest();
+        return true;
+    }
+
+    if (cmd == "rxdump" || cmd.startsWith("rxdump=")) {
+        unsigned long ms = 2000;
+        if (cmd.startsWith("rxdump=")) {
+            ms = cmd.substring(7).toInt();
+        }
+        rxDump(ms);
+        return true;
+    }
+
+    if (cmd == "scan" || cmd.startsWith("scan=")) {
+        uint8_t firstId = 1, lastId = 10;
+        if (cmd.startsWith("scan=")) {
+            String range = cmd.substring(5);
+            int dash = range.indexOf('-');
+            if (dash > 0) {
+                firstId = (uint8_t)range.substring(0, dash).toInt();
+                lastId = (uint8_t)range.substring(dash + 1).toInt();
+            }
+        }
+        return scanSlaveIds(firstId, lastId);
+    }
+
     Serial.print("[MARSTEK] Unknown command: ");
     Serial.print(cmd);
-    Serial.println(" (use: charge=<watts>, discharge=<watts>, stop)");
+    Serial.println(" (use: charge=<watts>, discharge=<watts>, stop, "
+                   "scan[=<first>-<last>], raw=<id>, rxdump[=<ms>], echotest)");
     return false;
+}
+
+static uint16_t modbusCrc16(const uint8_t* data, uint8_t len) {
+    uint16_t crc = 0xFFFF;
+    for (uint8_t i = 0; i < len; i++) {
+        crc ^= data[i];
+        for (uint8_t b = 0; b < 8; b++) {
+            crc = (crc & 0x0001) ? (crc >> 1) ^ 0xA001 : crc >> 1;
+        }
+    }
+    return crc;
+}
+
+void Marstek::rawRead(uint8_t slaveId) {
+    uint8_t req[8] = {
+        slaveId, 0x03,
+        (uint8_t)(REG_BATTERY_BASE >> 8), (uint8_t)(REG_BATTERY_BASE & 0xFF),
+        0x00, 0x01
+    };
+    uint16_t crc = modbusCrc16(req, 6);
+    req[6] = crc & 0xFF;
+    req[7] = crc >> 8;
+
+    while (Serial2.read() != -1);
+    Serial.printf("[MARSTEK] TX to ID %3u: ", slaveId);
+    for (int i = 0; i < 8; i++) Serial.printf("%02X ", req[i]);
+    Serial.println();
+
+    _preTransmission();
+    Serial2.write(req, sizeof(req));
+    Serial2.flush();
+    _postTransmission();
+
+    unsigned long end = millis() + 1500;
+    unsigned count = 0;
+    Serial.print("[MARSTEK] RX: ");
+    while (millis() < end) {
+        if (Serial2.available()) {
+            Serial.printf("%02X ", Serial2.read());
+            if (++count % 16 == 0) Serial.println();
+        } else if (_idleCallback) {
+            _idleCallback();
+        }
+    }
+    Serial.printf("\n[MARSTEK] %u byte(s) received", count);
+    if (count > 0) {
+        Serial.println(" - first byte is the responder's slave ID;\n"
+                       "           if RX == TX the receiver is echoing our own frame");
+    } else {
+        Serial.println();
+    }
+}
+
+void Marstek::echoTest() {
+    uint8_t req[8] = {
+        MODBUS_SLAVE_ID, 0x03,
+        (uint8_t)(REG_BATTERY_BASE >> 8), (uint8_t)(REG_BATTERY_BASE & 0xFF),
+        0x00, 0x01
+    };
+    uint16_t crc = modbusCrc16(req, 6);
+    req[6] = crc & 0xFF;
+    req[7] = crc >> 8;
+
+    while (Serial2.read() != -1);
+    Serial.print("[MARSTEK] Echo test TX: ");
+    for (int i = 0; i < 8; i++) Serial.printf("%02X ", req[i]);
+    Serial.println();
+
+    // Driver ON, receiver stays ON (/RE low): own frame should echo back
+    digitalWrite(RS485_DE_PIN, HIGH);
+    Serial2.write(req, sizeof(req));
+    Serial2.flush();
+    digitalWrite(RS485_DE_PIN, LOW);
+
+    unsigned long end = millis() + 1500;
+    uint8_t rx[8] = {0};
+    unsigned count = 0;
+    Serial.print("[MARSTEK] RX: ");
+    while (millis() < end) {
+        if (Serial2.available()) {
+            uint8_t b = Serial2.read();
+            if (count < sizeof(rx)) rx[count] = b;
+            Serial.printf("%02X ", b);
+            if (++count % 16 == 0) Serial.println();
+        } else if (_idleCallback) {
+            _idleCallback();
+        }
+    }
+    Serial.println();
+    if (count == 8 && memcmp(rx, req, 8) == 0) {
+        Serial.println("[MARSTEK] Echo OK: driver and receiver path work "
+                       "- problem is downstream (cable, battery port, slave)");
+    } else {
+        Serial.printf("[MARSTEK] %u byte(s) received - no clean echo: "
+                      "check DE->GPIO15, DI->GPIO33, transceiver power\n", count);
+    }
+}
+
+void Marstek::rxDump(unsigned long durationMs) {
+    Serial.printf("[MARSTEK] RX dump: listening %lu ms, transmitting nothing...\n",
+                  durationMs);
+    while (Serial2.read() != -1);
+    unsigned long end = millis() + durationMs;
+    unsigned count = 0;
+    while (millis() < end) {
+        if (Serial2.available()) {
+            Serial.printf("%02X ", Serial2.read());
+            if (++count % 16 == 0) Serial.println();
+        } else if (_idleCallback) {
+            _idleCallback();
+        }
+    }
+    Serial.printf("\n[MARSTEK] RX dump done: %u byte(s) received\n", count);
+}
+
+bool Marstek::scanSlaveIds(uint8_t firstId, uint8_t lastId) {
+    if (firstId < 1) firstId = 1;
+    if (lastId > 247) lastId = 247;
+    if (firstId > lastId) {
+        uint8_t tmp = firstId;
+        firstId = lastId;
+        lastId = tmp;
+    }
+
+    Serial.printf("[MARSTEK] Scanning slave IDs %u-%u "
+                  "(unanswered reads take ~2 s each)...\n", firstId, lastId);
+    uint8_t found = 0;
+    for (uint16_t id = firstId; id <= lastId; id++) {
+        // Re-address the existing node; pre/post-transmission and idle
+        // callbacks are stored on the object and stay attached.
+        _node.begin((uint8_t)id, Serial2);
+        uint8_t result = _node.readHoldingRegisters(REG_BATTERY_BASE, 1);
+        if (result == _node.ku8MBSuccess) {
+            uint16_t raw = _node.getResponseBuffer(0);
+            Serial.printf("[MARSTEK]   ID %3u: RESPONDS, reg 32100 = %u (%.2f V)\n",
+                          id, raw, raw / 100.0f);
+            found++;
+        } else {
+            Serial.printf("[MARSTEK]   ID %3u: no response (0x%02X)\n", id, result);
+        }
+    }
+    _node.begin(MODBUS_SLAVE_ID, Serial2);
+    Serial.printf("[MARSTEK] Scan complete: %u responding device(s)\n", found);
+    return found > 0;
 }
 
 bool Marstek::setChargePower(uint16_t watts) {
@@ -289,6 +466,7 @@ void Marstek::_markOnline() {
 }
 
 void Marstek::setIdleCallback(void (*callback)()) {
+    _idleCallback = callback;
     _node.idle(callback);
 }
 
@@ -313,4 +491,9 @@ void Marstek::_postTransmission() {
     // Switch MAX485 back to receive mode
     digitalWrite(RS485_DE_PIN, LOW);
     digitalWrite(RS485_RE_PIN, LOW);
+    // While /RE was high, RO floats and the UART captures noise bytes.
+    // Discard everything received so far; a slave reply takes >=1.75
+    // char times to arrive, so draining now cannot lose real data.
+    delay(1);
+    while (Serial2.read() != -1);
 }

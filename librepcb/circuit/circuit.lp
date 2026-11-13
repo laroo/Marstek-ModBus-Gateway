@@ -289,14 +289,14 @@
   (device ee6a6293-d636-4766-89bf-90e40bdf9b88
    (variant 9289fc78-84fb-4ae6-8329-793579d3fccd)
   )
-  (signal 0594c798-023b-46c8-9358-06a947514ee0 (net 80debdf2-01d7-4acb-831c-fdb89a16b2d7))
+  (signal 0594c798-023b-46c8-9358-06a947514ee0 (net b76afee4-5b06-4760-b59b-e47b9a020dbe))
   (signal 310b0aa7-5eee-4035-9424-87ee4e5e7b74 (net f90303f3-24c7-427e-973c-2c9f89d7548b))
   (signal 6cca5fb6-9fca-4226-abeb-17dd3cc323ba (net 43b03e69-2a3c-4b0a-9622-cda73bed143d))
   (signal cef75159-548b-433c-98e5-b5528bbb5a7e (net 536e38f0-aec5-45d1-9311-56360f2aa064))
   (signal d880a51d-025e-4d8f-99f2-c54b81b8d93e (net bcf53b2b-3194-4bb0-b7e9-a6b544b8f0e2))
   (signal f130191b-b477-4742-8c0f-8265194358e3 (net 03a2c08f-9fce-454e-9230-def5c7009b8b))
   (signal f2f140c1-0510-4ebc-9b9b-0eb8e6db8223 (net 3cf6cad1-29ae-4d9a-8dde-f1b3eb2dc23c))
-  (signal f7f8e274-677a-43d3-9a08-961b6bd723a9 (net b76afee4-5b06-4760-b59b-e47b9a020dbe))
+  (signal f7f8e274-677a-43d3-9a08-961b6bd723a9 (net 80debdf2-01d7-4acb-831c-fdb89a16b2d7))
  )
  (component 717892cc-344a-49da-b5f7-3017bbfaf132
   (lib_component 8076f6be-bfab-4fc1-9772-5d54465dd7e1)

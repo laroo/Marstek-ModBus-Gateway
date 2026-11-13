@@ -8,7 +8,8 @@
  *   - LED status indicators (green = Modbus activity, red = error)
  *   - Serial diagnostics at 115200 baud
  *
- * Serial commands: charge=<watts>, discharge=<watts>, stop
+ * Serial commands: charge=<watts>, discharge=<watts>, stop,
+ *   scan[=<first>-<last>], raw=<id>, rxdump[=<ms>], echotest
  */
 
 #include "Arduino.h"
@@ -233,7 +234,8 @@ void setup() {
   Serial.println("[INIT] Connection status reporting scheduled every 5 seconds");
 
   Serial.println("[INIT] System initialization complete");
-  Serial.println("[INIT] Commands: charge=<watts>, discharge=<watts>, stop");
+  Serial.println("[INIT] Commands: charge=<watts>, discharge=<watts>, stop, "
+                 "scan[=<first>-<last>], raw=<id>, rxdump[=<ms>], echotest");
   Serial.println("======================================");
 }
 
