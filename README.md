@@ -70,9 +70,9 @@ TODO
 
 Used LibrePCB to design the schematics and PCB.
 
-![Schematic](MarstekModBusGateway_Schematics_v1.0.png)
+![Schematic](librepcb/output/v1.0/Marstek_ModBus_Gateway_Schematics.png)
 
-![PCB](MarstekModBusGateway_PCB_v1.0.png)
+![PCB](librepcb/output/v1.0/MarstekModBusGateway_PCB.png)
 
 Gerber files for the PCB can be found [here](librepcb/output/v1.0/gerber).
 
