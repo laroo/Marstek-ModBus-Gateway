@@ -1339,7 +1339,7 @@
  )
  (text 0b898cc1-45a2-4b72-8f2c-f04a442987ff (layer sch_comments) (height 2.5)
   (align left bottom) (position 160.02 181.61) (rotation 0.0) (lock false)
-  (value "JTAG (debug/flash)")
+  (value "UART (debug/flash)")
  )
  (text 4e4bc73d-8929-4f68-8c21-45ccd433d026 (layer sch_comments) (height 2.5)
   (align left bottom) (position 205.74 181.61) (rotation 0.0) (lock false)

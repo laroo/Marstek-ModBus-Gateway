@@ -1,6 +1,6 @@
 G04 --- HEADER BEGIN --- *
 G04 #@! TF.GenerationSoftware,LibrePCB,LibrePCB,2.1.1*
-G04 #@! TF.CreationDate,2026-11-15T21:37:34*
+G04 #@! TF.CreationDate,2026-11-16T00:36:41*
 G04 #@! TF.ProjectId,Marstek ModBus Gateway,8a633c5c-b075-4c35-a81d-aba18a590e16,v1.0*
 G04 #@! TF.Part,Single*
 G04 #@! TF.SameCoordinates*
@@ -7981,5 +7981,5 @@ X300000Y75600001D01*
 X300000Y399999D01*
 G37*
 G04 --- BOARD END --- *
-G04 #@! TF.MD5,86f4df2581a386819afb99070a851ac5*
+G04 #@! TF.MD5,6dc864017a8cadab86a63e9414e2f515*
 M02*
