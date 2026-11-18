@@ -40,6 +40,8 @@ struct MarstekTelemetry {
     float batteryVoltage = 0.0f;        // V   (32100, u16, 0.01 V)
     float batteryCurrent = 0.0f;        // A   (32101, s16, 0.01 A)
     int32_t batteryPower = 0;           // W   (32102-32103, s32)
+    uint16_t batterySoc = 0;            // %   (32104, u16)
+    float batteryEnergy = 0.0f;         // kWh (32105, u16, 0.001)
     float acVoltage = 0.0f;             // V   (32200, u16, 0.1 V)
     float acCurrent = 0.0f;             // A   (32201, u16, 0.01 A)
     int32_t acPower = 0;                // W   (32202-32203, s32)

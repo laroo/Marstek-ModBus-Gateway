@@ -26,11 +26,13 @@ All firmware source files are in `src/`:
 - `marstek.cpp` / `marstek.h` — `Marstek` class: ModbusMaster wrapper over RS485,
   keeps a `MarstekTelemetry` snapshot updated, accepts commands
   (`charge=<W>`, `discharge=<W>`, `stop`)
-- `ledmanager.cpp` / `ledmanager.h` — `LEDManager`: two active-low LEDs;
-  green blips on Modbus activity, red solid while Modbus/network error
+- `ledmanager.cpp` / `ledmanager.h` — `LEDManager`: two active-low LEDs as
+  boot/status indicator: red blinks during boot (~1 s), red solid while
+  connecting (DHCP/link), green fast-blinks while MQTT connects, green solid
+  when online (dips on each publish); red solid on Modbus/network error
 - `mqttmanager.cpp` / `mqttmanager.h` — `MQTTManager`: PubSubClient over
-  Ethernet/WiFi, publishes `marstek-modbus-gateway/*` topics, subscribes to
-  the command topic
+  Ethernet/WiFi, publishes `marstek/gateway/<esp-mac>/*` heartbeat and
+  `marstek/<batt-mac>/*` telemetry, subscribes to `marstek/<batt-mac>/command`
 - `webmanager.cpp` / `webmanager.h` — HTTP dashboard (`/`, `/status` JSON,
   `/charge`, `/discharge`, `/stop`) + ElegantOTA
 - `config.h` — compile-time configuration (MQTT, OTA) via build flags

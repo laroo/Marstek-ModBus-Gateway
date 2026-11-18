@@ -4,12 +4,15 @@ Derived from `specs/dispatcher-requirements.md`. Status: [ ] open / [x] done.
 
 ## Data / investigation
 
-- [ ] Check MQTT broker for an instantaneous P1 **export/delivery** topic
-      (e.g. `actual_delivery`, `lX_instant_power_delivery`). If none exists,
-      fall back per §4 "Inputs" of the requirements doc.
+- [x] Check MQTT broker for an instantaneous P1 **export/delivery** topic
+      — resolved: P1 gateway now publishes `sensors/power/p1meter/json`
+      with `power_returned` (see requirements §3). Per-field fallback:
+      `actual_returndelivery` (verify on broker if ever needed).
 - [ ] Confirm P1 units are kW at runtime (subscribe to
-      `sensors/power/p1meter/actual_consumption` during known load).
-- [ ] **Enphase Envoy-S integration** — the site has an Envoy-S gateway with
+      `sensors/power/p1meter/json` and check `power_delivered` /
+      `power_returned` during known load).
+- [ ] **Enphase Envoy-S integration** (fallback only, now that the P1
+      JSON topic exists) — the site has an Envoy-S gateway with
       16× IQ8Plus micro inverters, not yet on MQTT. Investigate its local
       API (`/production.json`, `/ivp/meters`): if it is the *metered*
       variant its consumption CTs report net import/export directly;
@@ -21,14 +24,14 @@ Derived from `specs/dispatcher-requirements.md`. Status: [ ] open / [x] done.
 
 ## Gateway firmware (this repo)
 
-- [ ] Per-device MQTT topic prefix via build flag
-      (`MQTT_BASE_TOPIC="marstek/batt-1"`) + unique `MQTT_CLIENT_ID`;
-      replaces hardcoded `marstek-modbus-gateway` in `mqttmanager.cpp`.
-- [ ] Read + publish battery SoC (reg 32104) and total energy (reg 32105):
-      extend `MarstekTelemetry`, `_pollTelemetry()`, `publishStatus()`.
+- [x] Per-device MQTT topics: `marstek/gateway/<esp-mac>/` heartbeat +
+      `marstek/<batt-mac>/` telemetry (implemented; `MQTT_ROOT_TOPIC`
+      build flag, ESP32 efuse MAC as client/gateway id).
+- [x] Read + publish battery SoC (reg 32104) and total energy (reg 32105):
+      `battery/soc` + `battery/energy`.
 - [ ] Command watchdog: `stopControl()` / 0 W when no command within
       `command_timeout_s` (~15–30 s) while under RS485 control.
-- [ ] MQTT LWT `availability` topic per gateway (online/offline).
+- [x] MQTT LWT `marstek/gateway/<esp-mac>/availability` (online/offline).
 
 ## Dispatcher service (new Docker component)
 

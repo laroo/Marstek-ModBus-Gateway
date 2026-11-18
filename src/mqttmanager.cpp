@@ -9,9 +9,6 @@
 #include "mqttmanager.h"
 #include <ETH.h>
 
-// Base topic prefix for all published values
-static const char* MQTT_BASE_TOPIC = "marstek-modbus-gateway";
-
 // Static instance pointer for callback handling
 MQTTManager* MQTTManager::_instance = nullptr;
 
@@ -20,12 +17,12 @@ MQTTManager* MQTTManager::_instance = nullptr;
 // ============================================================================
 
 MQTTManager::MQTTManager(const char* broker, int port, const char* clientId,
-                         const char* statusTopic, const char* commandTopic,
+                         const char* gatewayId, const char* rootTopic,
                          const char* username, const char* password)
-    : _port(port), _ethClient(nullptr), _mqttClient(nullptr),
-      _initialized(false), _autoPublishEnabled(true),
+    : _port(port), _batteryCmdSubscribed(false), _ethClient(nullptr),
+      _mqttClient(nullptr), _initialized(false), _autoPublishEnabled(true),
       _lastPublish(0), _lastConnectionAttempt(0), _reconnectAttempts(0),
-      _marstek(nullptr), _useAuth(false) {
+      _marstek(nullptr), _activityCallback(nullptr), _useAuth(false) {
 
     // Copy configuration strings
     strncpy(_broker, broker, sizeof(_broker) - 1);
@@ -34,11 +31,13 @@ MQTTManager::MQTTManager(const char* broker, int port, const char* clientId,
     strncpy(_clientId, clientId, sizeof(_clientId) - 1);
     _clientId[sizeof(_clientId) - 1] = '\0';
 
-    strncpy(_statusTopic, statusTopic, sizeof(_statusTopic) - 1);
-    _statusTopic[sizeof(_statusTopic) - 1] = '\0';
+    strncpy(_gatewayId, gatewayId, sizeof(_gatewayId) - 1);
+    _gatewayId[sizeof(_gatewayId) - 1] = '\0';
 
-    strncpy(_commandTopic, commandTopic, sizeof(_commandTopic) - 1);
-    _commandTopic[sizeof(_commandTopic) - 1] = '\0';
+    strncpy(_rootTopic, rootTopic, sizeof(_rootTopic) - 1);
+    _rootTopic[sizeof(_rootTopic) - 1] = '\0';
+
+    _batteryMac[0] = '\0';
 
     // Copy authentication credentials if provided
     if (username != nullptr && password != nullptr) {
@@ -96,10 +95,10 @@ void MQTTManager::initialize(NetworkClient* activeClient) {
     Serial.println(_port);
     Serial.print("[MQTT] Client ID: ");
     Serial.println(_clientId);
-    Serial.print("[MQTT] Status topic: ");
-    Serial.println(_statusTopic);
-    Serial.print("[MQTT] Command topic: ");
-    Serial.println(_commandTopic);
+    Serial.print("[MQTT] Gateway topic: ");
+    Serial.print(_rootTopic);
+    Serial.print("/gateway/");
+    Serial.println(_gatewayId);
 
     // Schedule periodic status publishing (runs when connected)
     if (_autoPublishEnabled) {
@@ -152,27 +151,40 @@ bool MQTTManager::connect() {
     Serial.print(":");
     Serial.println(_port);
 
+    // LWT: broker publishes "offline" (retained) if we drop ungracefully
+    char willTopic[96];
+    snprintf(willTopic, sizeof(willTopic), "%s/gateway/%s/availability",
+             _rootTopic, _gatewayId);
+
     // Attempt MQTT connection with or without authentication
     bool connected;
     if (_useAuth) {
         Serial.println("[MQTT] Connecting with authentication...");
-        connected = _mqttClient->connect(_clientId, _username, _password);
+        connected = _mqttClient->connect(_clientId, _username, _password,
+                                         willTopic, 0, true, "offline");
     } else {
         Serial.println("[MQTT] Connecting without authentication...");
-        connected = _mqttClient->connect(_clientId);
+        connected = _mqttClient->connect(_clientId, willTopic, 0, true, "offline");
     }
 
     if (connected) {
         Serial.println("[MQTT] Connected to broker successfully");
         _reconnectAttempts = 0;
+        _batteryCmdSubscribed = false;
 
-        // Subscribe to command topic
-        if (_mqttClient->subscribe(_commandTopic)) {
-            Serial.print("[MQTT] Subscribed to command topic: ");
-            Serial.println(_commandTopic);
-        } else {
-            Serial.print("[ERROR] Failed to subscribe to command topic: ");
-            Serial.println(_commandTopic);
+        _mqttClient->publish(willTopic, "online", true);
+
+        // Retained gateway identity so consumers can map gateway <-> battery
+        char info[160];
+        snprintf(info, sizeof(info),
+                 "{\"client_id\":\"%s\",\"gateway_id\":\"%s\",\"battery_mac\":\"%s\"}",
+                 _clientId, _gatewayId, _batteryMac);
+        _publishGateway("info", info, true);
+
+        // Re-subscribe to the battery command topic if already discovered
+        if (_batteryMac[0] != '\0') {
+            _batteryCmdSubscribed = false;
+            _ensureBatterySubscription(_batteryMac);
         }
 
         _logConnectionStatus();
@@ -204,50 +216,66 @@ bool MQTTManager::publishStatus() {
         return false;
     }
 
-    bool statePublished = false;
-    bool clientIdPublished = false;
-    bool uptimePublished = false;
     char buf[24];
 
-    if (_marstek) {
-        const MarstekTelemetry& t = _marstek->getTelemetry();
-        String mode = _marstek->getControlModeString();
+    // Gateway heartbeat: always published, even without a battery
+    snprintf(buf, sizeof(buf), "%lu", millis() / 1000);
+    _publishGateway("uptime", buf);
+    _publishGateway("modbus/healthy",
+                    (_marstek && _marstek->isHealthy()) ? "1" : "0");
 
-        statePublished = _mqttClient->publish(_statusTopic, mode.c_str());
-        _publishTelemetry("modbus/healthy", _marstek->isHealthy() ? "1" : "0");
+    bool statePublished = false;
+    const bool batteryKnown =
+        _marstek && _marstek->getTelemetry().valid &&
+        _marstek->getTelemetry().mac[0] != '\0';
+
+    if (batteryKnown) {
+        const MarstekTelemetry& t = _marstek->getTelemetry();
+
+        _ensureBatterySubscription(t.mac);
+        _publishGateway("battery_mac", t.mac, true);
+
+        String mode = _marstek->getControlModeString();
+        statePublished = _publishBattery("status", mode.c_str());
+        _publishBattery("modbus/healthy", _marstek->isHealthy() ? "1" : "0");
 
         snprintf(buf, sizeof(buf), "%.2f", t.batteryVoltage);
-        _publishTelemetry("battery/voltage", buf);
+        _publishBattery("battery/voltage", buf);
         snprintf(buf, sizeof(buf), "%.2f", t.batteryCurrent);
-        _publishTelemetry("battery/current", buf);
+        _publishBattery("battery/current", buf);
         snprintf(buf, sizeof(buf), "%ld", (long)t.batteryPower);
-        _publishTelemetry("battery/power", buf);
+        _publishBattery("battery/power", buf);
+        snprintf(buf, sizeof(buf), "%u", t.batterySoc);
+        _publishBattery("battery/soc", buf);
+        snprintf(buf, sizeof(buf), "%.3f", t.batteryEnergy);
+        _publishBattery("battery/energy", buf);
 
         snprintf(buf, sizeof(buf), "%.1f", t.acVoltage);
-        _publishTelemetry("ac/voltage", buf);
+        _publishBattery("ac/voltage", buf);
         snprintf(buf, sizeof(buf), "%.2f", t.acCurrent);
-        _publishTelemetry("ac/current", buf);
+        _publishBattery("ac/current", buf);
         snprintf(buf, sizeof(buf), "%ld", (long)t.acPower);
-        _publishTelemetry("ac/power", buf);
+        _publishBattery("ac/power", buf);
         snprintf(buf, sizeof(buf), "%.2f", t.acFrequency);
-        _publishTelemetry("ac/frequency", buf);
+        _publishBattery("ac/frequency", buf);
 
         snprintf(buf, sizeof(buf), "%.2f", t.softwareVersion / 100.0f);
-        _publishTelemetry("software_version", buf);
+        _publishBattery("software_version", buf);
         snprintf(buf, sizeof(buf), "%u", t.firmwareVersion);
-        _publishTelemetry("firmware_version", buf);
-        _publishTelemetry("mac", t.mac);
+        _publishBattery("firmware_version", buf);
     } else {
-        statePublished = _mqttClient->publish(_statusTopic, "MISSING");
+        // No battery identified yet; gateway heartbeat is enough
+        statePublished = true;
     }
-    clientIdPublished = _mqttClient->publish("marstek-modbus-gateway/client_id", _clientId);
-    uptimePublished = _mqttClient->publish("marstek-modbus-gateway/uptime", String(millis() / 1000).c_str());
 
     bool success = false;
-    if (statePublished && clientIdPublished && uptimePublished) {
+    if (statePublished) {
         Serial.println("Published MQTT message(s)");
         _lastPublish = millis();
         success = true;
+        if (_activityCallback) {
+            _activityCallback();
+        }
     } else {
         Serial.println("Failed to publish MQTT message(s)");
         success = false;
@@ -275,18 +303,54 @@ void MQTTManager::setAutoPublish(bool enabled) {
     Serial.println(enabled ? "enabled" : "disabled");
 }
 
+void MQTTManager::setActivityCallback(void (*callback)()) {
+    _activityCallback = callback;
+}
+
 // ============================================================================
 // PRIVATE METHODS
 // ============================================================================
 
-void MQTTManager::_publishTelemetry(const char* subTopic, const char* payload) {
+bool MQTTManager::_publishGateway(const char* subTopic, const char* payload, bool retained) {
     char topic[96];
-    snprintf(topic, sizeof(topic), "%s/%s", MQTT_BASE_TOPIC, subTopic);
-    _mqttClient->publish(topic, payload);
+    snprintf(topic, sizeof(topic), "%s/gateway/%s/%s", _rootTopic, _gatewayId, subTopic);
+    return _mqttClient->publish(topic, payload, retained);
 }
 
-void MQTTManager::_publishTelemetry(const char* subTopic, const String& payload) {
-    _publishTelemetry(subTopic, payload.c_str());
+bool MQTTManager::_publishBattery(const char* subTopic, const char* payload, bool retained) {
+    char topic[96];
+    snprintf(topic, sizeof(topic), "%s/%s/%s", _rootTopic, _batteryMac, subTopic);
+    return _mqttClient->publish(topic, payload, retained);
+}
+
+void MQTTManager::_ensureBatterySubscription(const char* batteryMac) {
+    if (strcmp(_batteryMac, batteryMac) != 0) {
+        strncpy(_batteryMac, batteryMac, sizeof(_batteryMac) - 1);
+        _batteryMac[sizeof(_batteryMac) - 1] = '\0';
+        _batteryCmdSubscribed = false;
+
+        // Refresh the retained identity record with the learned battery MAC
+        char info[160];
+        snprintf(info, sizeof(info),
+                 "{\"client_id\":\"%s\",\"gateway_id\":\"%s\",\"battery_mac\":\"%s\"}",
+                 _clientId, _gatewayId, _batteryMac);
+        _publishGateway("info", info, true);
+    }
+
+    if (_batteryCmdSubscribed || !_mqttClient->connected()) {
+        return;
+    }
+
+    char commandTopic[96];
+    snprintf(commandTopic, sizeof(commandTopic), "%s/%s/command", _rootTopic, _batteryMac);
+    _batteryCmdSubscribed = _mqttClient->subscribe(commandTopic);
+    if (_batteryCmdSubscribed) {
+        Serial.print("[MQTT] Subscribed to command topic: ");
+        Serial.println(commandTopic);
+    } else {
+        Serial.print("[ERROR] Failed to subscribe to command topic: ");
+        Serial.println(commandTopic);
+    }
 }
 
 void MQTTManager::_onMessageReceived(char* topic, byte* payload, unsigned int length) {
@@ -302,8 +366,10 @@ void MQTTManager::_onMessageReceived(char* topic, byte* payload, unsigned int le
     Serial.print("[MQTT] Payload: ");
     Serial.println(command);
 
-    // Handle command if it's on the command topic
-    if (strcmp(topic, _commandTopic) == 0) {
+    // Handle command if it's on the battery command topic
+    char commandTopic[96];
+    snprintf(commandTopic, sizeof(commandTopic), "%s/%s/command", _rootTopic, _batteryMac);
+    if (strcmp(topic, commandTopic) == 0) {
         _handleCommand(command);
     }
 }

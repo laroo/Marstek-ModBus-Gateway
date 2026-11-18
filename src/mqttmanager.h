@@ -21,16 +21,21 @@ class MQTTManager {
 public:
     /**
      * Constructor - Initialize MQTT manager
+     *
+     * Topics are derived from rootTopic:
+     *   <root>/gateway/<gatewayId>/...  gateway heartbeat, always published
+     *   <root>/<battery-mac>/...        battery telemetry + command subscription,
+     *                                   appears once Modbus returns the MAC
      * @param broker MQTT broker hostname
      * @param port MQTT broker port
      * @param clientId Unique client identifier
-     * @param statusTopic Topic for publishing battery status
-     * @param commandTopic Topic for subscribing to commands
+     * @param gatewayId Stable gateway identifier (ESP32 MAC), used in topics
+     * @param rootTopic Root topic prefix, e.g. "marstek"
      * @param username MQTT username (optional, pass nullptr if not needed)
      * @param password MQTT password (optional, pass nullptr if not needed)
      */
     MQTTManager(const char* broker, int port, const char* clientId,
-                const char* statusTopic, const char* commandTopic,
+                const char* gatewayId, const char* rootTopic,
                 const char* username = nullptr, const char* password = nullptr);
 
     /**
@@ -82,13 +87,21 @@ public:
      */
     void setAutoPublish(bool enabled);
 
+    /**
+     * Register a callback invoked after each successful publishStatus batch
+     * @param callback Function called on publish activity
+     */
+    void setActivityCallback(void (*callback)());
+
 private:
     // MQTT configuration
     char _broker[64];           // MQTT broker hostname
     int _port;                  // MQTT broker port
-    char _clientId[32];         // Unique client ID
-    char _statusTopic[64];      // Status publishing topic
-    char _commandTopic[64];     // Command subscription topic
+    char _clientId[40];         // Unique client ID
+    char _gatewayId[16];        // Gateway identifier (ESP32 MAC hex)
+    char _rootTopic[32];        // Root topic prefix (e.g. "marstek")
+    char _batteryMac[13];       // Last seen battery MAC (empty until polled)
+    bool _batteryCmdSubscribed; // Command topic subscribed for _batteryMac
     char _username[64];         // MQTT username (empty if not used)
     char _password[64];         // MQTT password (empty if not used)
     bool _useAuth;              // Flag indicating if authentication is enabled
@@ -110,6 +123,7 @@ private:
 
     // Marstek controller reference
     Marstek* _marstek;          // Pointer to Marstek controller for telemetry/commands
+    void (*_activityCallback)(); // Called after a successful publish batch
 
     // Private methods
     void _onMessageReceived(char* topic, byte* payload, unsigned int length);
@@ -119,8 +133,9 @@ private:
     void _handleCommand(const String& command);
     void _logConnectionStatus();
     void _logCommandReceived(const String& command);
-    void _publishTelemetry(const char* subTopic, const char* payload);
-    void _publishTelemetry(const char* subTopic, const String& payload);
+    bool _publishGateway(const char* subTopic, const char* payload, bool retained = false);
+    bool _publishBattery(const char* subTopic, const char* payload, bool retained = false);
+    void _ensureBatterySubscription(const char* batteryMac);
 
     // Static instance pointer for callback handling
     static MQTTManager* _instance;

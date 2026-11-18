@@ -30,10 +30,9 @@
 #define MQTT_PASSWORD nullptr
 #endif
 
-// MQTT topic prefix
-#ifndef MQTT_TOPIC_STATUS
-#define MQTT_TOPIC_STATUS "marstek-modbus-gateway/status"
-#endif
-#ifndef MQTT_TOPIC_COMMAND
-#define MQTT_TOPIC_COMMAND "marstek-modbus-gateway/command"
+// MQTT root topic prefix; per-device subtopics are derived from it:
+//   <root>/gateway/<esp-mac>/...  gateway heartbeat (uptime, availability, modbus)
+//   <root>/<battery-mac>/...      battery telemetry + command subscription
+#ifndef MQTT_ROOT_TOPIC
+#define MQTT_ROOT_TOPIC "marstek"
 #endif

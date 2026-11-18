@@ -1,8 +1,8 @@
 /**
  * LEDManager.cpp - Marstek Modbus Gateway LED Manager Implementation
  *
- * Two active-low status LEDs: green flashes on Modbus activity,
- * red is solid while an error condition is present.
+ * Two active-low status LEDs showing boot progress and runtime state;
+ * see ledmanager.h for the phase descriptions.
  */
 
 #include "ledmanager.h"
@@ -13,8 +13,9 @@
 
 LEDManager::LEDManager(int redPin, int greenPin, bool activeLow)
     : _redPin(redPin), _greenPin(greenPin), _activeLow(activeLow),
-      _initialized(false), _error(false),
-      _redOffTime(0), _greenOffTime(0) {
+      _initialized(false), _phase(Phase::Boot), _error(false),
+      _blinkOn(false), _blinkLast(0), _greenBlipUntil(0),
+      _redOn(false), _greenOn(false) {
     Serial.println("[LED] LEDManager constructor called");
 }
 
@@ -42,57 +43,83 @@ void LEDManager::update() {
     }
 
     unsigned long now = millis();
-    if (_greenOffTime && now >= _greenOffTime) {
-        _greenOffTime = 0;
-        _writeGreen(false);
+    bool red = false;
+    bool green = false;
+
+    switch (_phase) {
+        case Phase::Boot:
+            red = _blink(now, 500);  // 1 s period
+            break;
+        case Phase::NetConnecting:
+            red = true;
+            break;
+        case Phase::MqttConnecting:
+            green = _blink(now, 100);  // 200 ms period
+            red = _error;
+            break;
+        case Phase::Online:
+            green = !(_greenBlipUntil && (long)(now - _greenBlipUntil) < 0);
+            red = _error;
+            break;
     }
-    if (_redOffTime && now >= _redOffTime) {
-        _redOffTime = 0;
-        _writeRed(_error); // restore error state after a flash
-    }
+
+    _apply(red, green);
 }
 
-void LEDManager::flashGreen(uint16_t ms) {
-    if (!_initialized) {
+void LEDManager::setPhase(Phase phase) {
+    if (!_initialized || phase == _phase) {
         return;
     }
-    _greenOffTime = millis() + ms;
-    _writeGreen(true);
+    _phase = phase;
+    _blinkOn = true;  // start each blink phase with the LED on
+    _blinkLast = millis();
+    Serial.printf("[LED] Phase -> %d\n", (int)phase);
 }
 
-void LEDManager::flashRed(uint16_t ms) {
-    if (!_initialized) {
+void LEDManager::blipGreen(uint16_t ms) {
+    if (!_initialized || _phase != Phase::Online) {
         return;
     }
-    _redOffTime = millis() + ms;
-    _writeRed(true);
+    _greenBlipUntil = millis() + ms;
+    _apply(_error, false);
 }
 
 void LEDManager::setError(bool active) {
-    if (!_initialized) {
-        return;
-    }
-    if (_error == active) {
+    if (!_initialized || _error == active) {
         return;
     }
     _error = active;
-    if (!_redOffTime) {
-        _writeRed(active);
-    }
     Serial.printf("[LED] Error indicator %s\n", active ? "ON" : "OFF");
 }
 
 void LEDManager::allOff() {
     _error = false;
-    _redOffTime = 0;
-    _greenOffTime = 0;
-    _writeRed(false);
-    _writeGreen(false);
+    _greenBlipUntil = 0;
+    _apply(false, false);
 }
 
 // ============================================================================
 // PRIVATE METHODS
 // ============================================================================
+
+bool LEDManager::_blink(unsigned long now, uint16_t halfPeriodMs) {
+    if (now - _blinkLast >= halfPeriodMs) {
+        _blinkLast = now;
+        _blinkOn = !_blinkOn;
+    }
+    return _blinkOn;
+}
+
+void LEDManager::_apply(bool redOn, bool greenOn) {
+    if (redOn != _redOn) {
+        _redOn = redOn;
+        _writeRed(redOn);
+    }
+    if (greenOn != _greenOn) {
+        _greenOn = greenOn;
+        _writeGreen(greenOn);
+    }
+}
 
 void LEDManager::_writeRed(bool on) {
     digitalWrite(_redPin, (on == _activeLow) ? LOW : HIGH);

@@ -183,13 +183,19 @@ static void handle_read_holding_registers(uart_dev_t uart0, chip_state_t *chip,
         response_length = 2;
         response_data[0] = 0x14; // 5120 -> 51.20 V
         response_data[1] = 0x00;
-      } else if (quantity == 4) {
-        // Convenience: voltage + current + power in one read (32100..32103)
+      } else if (quantity == 4 || quantity == 6) {
+        // Convenience: voltage + current + power in one read (32100..32103),
+        // optionally extended with SoC + total energy (32100..32105)
         response_length = 8;
         response_data[0] = 0x14; response_data[1] = 0x00; // 32100 voltage
         response_data[2] = 0x05; response_data[3] = 0xDE; // 32101 current 1502
         response_data[4] = 0x00; response_data[5] = 0x00; // 32102 power high
         response_data[6] = 0x09; response_data[7] = 0xC4; // 32103 power low 2500
+        if (quantity == 6) {
+          response_length = 12;
+          response_data[8] = 0x00; response_data[9] = 0x32;  // 32104 SoC 50 %
+          response_data[10] = 0x09; response_data[11] = 0xC4; // 32105 energy 2.5 kWh
+        }
       } else {
         send_modbus_exception(uart0, slave_id, function_code, 0x03);
         return;

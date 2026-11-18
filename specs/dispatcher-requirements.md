@@ -40,18 +40,31 @@ Goal: fully local, structured control over MQTT:
 
 ## 3. MQTT Topic Scheme (target)
 
-Per-device prefix — requires a firmware change (see §5):
+Two trees under the `marstek` root (implemented in firmware, see §5):
 
 ```
-marstek/<id>/status              Idle|Charging|Discharging|MISSING
-marstek/<id>/battery/voltage|current|power
-marstek/<id>/battery/soc         ← new (register 32104)
-marstek/<id>/battery/energy      ← new (register 32105)
-marstek/<id>/ac/voltage|current|power|frequency
-marstek/<id>/modbus/healthy      0|1
-marstek/<id>/availability        online|offline  (LWT)
-marstek/<id>/command             charge=<W>|discharge=<W>|stop  (subscribed)
+marstek/gateway/<esp-mac>/info        retained JSON: client_id, gateway_id,
+                                      battery_mac
+marstek/gateway/<esp-mac>/uptime      seconds since gateway boot
+marstek/gateway/<esp-mac>/availability online|offline  (LWT, retained)
+marstek/gateway/<esp-mac>/modbus/healthy 0|1
+marstek/gateway/<esp-mac>/battery_mac retained once known
 
+marstek/<batt-mac>/status             IDLE|CHARGING|DISCHARGING
+marstek/<batt-mac>/battery/voltage|current|power|soc|energy
+marstek/<batt-mac>/ac/voltage|current|power|frequency
+marstek/<batt-mac>/modbus/healthy     0|1
+marstek/<batt-mac>/software_version|firmware_version
+marstek/<batt-mac>/command            charge=<W>|discharge=<W>|stop  (subscribed)
+```
+
+`<batt-mac>` is the battery MAC from register 30402; the battery tree only
+appears after the first successful Modbus poll. `<esp-mac>` is the gateway
+ESP32 efuse MAC, known at boot — it is also the MQTT client id
+(`marstek-gw-<esp-mac>`). The gateway heartbeat therefore works even when no
+battery answers; `gateway/*/battery_mac` provides the gateway↔battery mapping.
+
+```
 sensors/power/p1meter/*          P1 meter, per-field DSMR topics (existing):
   actual_consumption             instantaneous import, ~kW (see units note)
   l1|l2|l3_instant_power_usage   per-phase import (published as 11_/12_/13_*)
@@ -61,6 +74,18 @@ sensors/power/p1meter/*          P1 meter, per-field DSMR topics (existing):
   returndelivery_*_tarif         cumulative export counters, kWh
   actual_tarif_group             active tariff group
   gas_meter_m3                   gas counter
+
+sensors/power/p1meter/json       NEW: full telegram snapshot as one JSON
+                                 object per report cycle (atomic; all
+                                 fields consistent within one telegram):
+  id, ts, tariff                 meter serial, telegram timestamp, tariff
+  ed1|ed2|er1|er2                cumulative import/export counters, kWh
+  power_delivered|power_returned instantaneous import/export, kW
+  pd_l1..3|pr_l1..3              per-phase import/export, kW
+  v_l1..3                        per-phase voltage, V
+  c_l1..3                        per-phase current, A
+  gas_m3                         gas counter
+  failures, long_failures, sags_l1..3, swells_l1..3
 
 dispatcher/state                 JSON: mode, per-battery decision, setpoints
 dispatcher/mode                  auto|manual|off  (retained, settable)
@@ -79,12 +104,12 @@ check (e.g. flag values < ~5 W when phases show current flowing).
 
 - Per-gateway telemetry (SoC, battery power, AC power, health, availability).
 - P1 net power `P_net`: positive = importing, negative = exporting/surplus.
-  Derived from `sensors/power/p1meter/actual_consumption` (import) and an
-  instantaneous export source — **TBD**: the observed topic list has only
-  cumulative `returndelivery_*_tarif` counters, no instantaneous export
-  field. Options, in order of preference:
-  1. Check the broker for a delivery/return topic (e.g. `actual_delivery`,
-     `lX_instant_power_delivery`) — many DSMR publishers emit one.
+  **Preferred source**: `sensors/power/p1meter/json` — one atomic JSON per
+  telegram with `power_delivered` (import) and `power_returned` (export)
+  in kW: `P_net = power_delivered - power_returned`. Fallbacks if the JSON
+  topic is unavailable:
+  1. Per-field topics `actual_consumption` + `actual_returndelivery`
+     (note: updates arrive per-field, not atomically).
   2. **Enphase Envoy-S local API** (exists on-site, 16× IQ8Plus, not on
      MQTT yet — see `specs/tasks.md`). If it is the metered variant its
      consumption CTs report net power incl. export directly; otherwise PV
@@ -142,17 +167,19 @@ hysteresis, dwell times.
 
 New work needed to support the dispatcher:
 
-1. **Per-device topic prefix** — build flag e.g.
-   `MQTT_BASE_TOPIC="marstek/batt-1"` + unique `MQTT_CLIENT_ID`, replacing
-   the hardcoded `marstek-modbus-gateway` prefix in `mqttmanager.cpp`.
-2. **Publish SoC** — add `batterySoc` (reg 32104, u16) and `batteryEnergy`
-   (reg 32105) to `MarstekTelemetry` and `publishStatus()`. Required for
-   the SoC-based allocation.
+1. ~~**Per-device topic prefix**~~ — done: two-level scheme (§3) derived
+   from `MQTT_ROOT_TOPIC` (build flag, default `marstek`); gateway id =
+   ESP32 efuse MAC, battery id = battery MAC (reg 30402). No per-device
+   build config needed — identical firmware on all 3 gateways.
+2. ~~**Publish SoC**~~ — done: `batterySoc` (reg 32104, u16, %) and
+   `batteryEnergy` (reg 32105, 0.001 kWh) in `MarstekTelemetry`,
+   published as `battery/soc` and `battery/energy`.
 3. **Command watchdog** — if no command arrives within `command_timeout_s`
    (default ~15–30 s) while under RS485 control, call `stopControl()` /
    set 0 W. This is the fail-safe: **controller or broker down → batteries
-   go idle**, never stuck at a stale setpoint.
-4. **MQTT LWT** — per-gateway `availability` topic (`online`/`offline`).
+   go idle**, never stuck at a stale setpoint. *Still open.*
+4. ~~**MQTT LWT**~~ — done: `marstek/gateway/<esp-mac>/availability`
+   (`online`/`offline`, retained will).
 
 ## 6. Non-Functional
 
@@ -180,8 +207,8 @@ New work needed to support the dispatcher:
 
 - ~~P1 topic/payload format~~ — resolved: per-field DSMR topics under
   `sensors/power/p1meter/`, values in ~kW (see §3).
-- **Instantaneous export power** — not confirmed on the P1 publisher yet;
-  see "Inputs" in §4 for the fallback chain incl. Envoy-S.
+- ~~Instantaneous export power~~ — resolved: `power_returned` in the new
+  `sensors/power/p1meter/json` topic. Envoy-S remains as fallback only.
 - "Fully charge one battery and discharge another" — interpreted as
   **alternating phases** driven by net power. If *simultaneous*
   charge-A/discharge-B (energy shuffling between batteries) is ever wanted,

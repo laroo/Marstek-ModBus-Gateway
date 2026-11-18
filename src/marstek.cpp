@@ -12,7 +12,7 @@
 // ============================================================================
 // MODBUS REGISTER ADDRESSES
 // ============================================================================
-static constexpr uint16_t REG_BATTERY_BASE      = 0x7D64; // 32100..32103: V, I, P
+static constexpr uint16_t REG_BATTERY_BASE      = 0x7D64; // 32100..32105: V, I, P, SoC, energy
 static constexpr uint16_t REG_SW_VERSION        = 0x76C0; // 30400: software version (0.01)
 static constexpr uint16_t REG_FW_VERSION        = 0x76C1; // 30401: firmware version
 static constexpr uint16_t REG_MAC               = 0x76C2; // 30402: device MAC (6 regs)
@@ -367,16 +367,18 @@ void Marstek::_pollTelemetry() {
     uint8_t result;
     bool ok = true;
 
-    // Battery voltage, current and power (registers 32100..32103)
-    result = _node.readHoldingRegisters(REG_BATTERY_BASE, 4);
+    // Battery voltage, current, power, SoC and energy (registers 32100..32105)
+    result = _node.readHoldingRegisters(REG_BATTERY_BASE, 6);
     if (result == _node.ku8MBSuccess) {
         _telemetry.batteryVoltage = _node.getResponseBuffer(0) / 100.0f;
         _telemetry.batteryCurrent = (int16_t)_node.getResponseBuffer(1) / 100.0f;
         _telemetry.batteryPower = ((int32_t)(int16_t)_node.getResponseBuffer(2) << 16)
                                   | _node.getResponseBuffer(3);
-        Serial.printf("[MARSTEK] Vbatt: %.2f V, Ibatt: %.2f A, Pbatt: %ld W\n",
+        _telemetry.batterySoc = _node.getResponseBuffer(4);
+        _telemetry.batteryEnergy = _node.getResponseBuffer(5) / 1000.0f;
+        Serial.printf("[MARSTEK] Vbatt: %.2f V, Ibatt: %.2f A, Pbatt: %ld W, SoC: %u %%\n",
                       _telemetry.batteryVoltage, _telemetry.batteryCurrent,
-                      (long)_telemetry.batteryPower);
+                      (long)_telemetry.batteryPower, _telemetry.batterySoc);
     } else {
         Serial.printf("[MARSTEK] Battery read error: 0x%02X\n", result);
         ok = false;

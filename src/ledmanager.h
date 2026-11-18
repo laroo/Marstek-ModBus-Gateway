@@ -4,9 +4,13 @@
  * Defines the LEDManager class interface for the two status LEDs.
  * LEDs are wired active-low (anode to VCC via resistor, cathode to GPIO).
  *
- * Intended usage:
- *   - flashGreen() on successful Modbus telemetry polls / commands
- *   - setError(true) while a Modbus or network error is present (solid red)
+ * The LEDs show boot progress and runtime state:
+ *   - Phase::Boot           red blinks (1 s period) until network init starts
+ *   - Phase::NetConnecting  red solid while DHCP / link comes up
+ *   - Phase::MqttConnecting green blinks fast (200 ms period) until MQTT connects
+ *   - Phase::Online         green solid; blipGreen() dips it on each publish
+ * A Modbus/network error turns the red LED on in the MqttConnecting and
+ * Online phases via setError().
  */
 
 #ifndef LEDManager_h
@@ -19,6 +23,14 @@
 // ============================================================================
 class LEDManager {
 public:
+    // Boot/connection progress phases
+    enum class Phase : uint8_t {
+        Boot,           // red blink, before network init
+        NetConnecting,  // red solid, DHCP/link in progress
+        MqttConnecting, // green fast blink, IP up but MQTT not connected
+        Online          // green solid, MQTT connected
+    };
+
     /**
      * Constructor - Initialize LED manager
      * @param redPin GPIO pin for red LED (error indicator)
@@ -38,22 +50,22 @@ public:
     void initialize();
 
     /**
-     * Update LED states (expires one-shot flashes)
+     * Update LED states (drives phase blinking and blip expiry)
      * Should be called regularly in main loop
      */
     void update();
 
     /**
-     * Brief green flash (e.g. successful telemetry poll or command)
-     * @param ms Flash duration in milliseconds
+     * Set the boot/connection phase
+     * @param phase New phase
      */
-    void flashGreen(uint16_t ms = 150);
+    void setPhase(Phase phase);
 
     /**
-     * Brief red flash (e.g. command received)
-     * @param ms Flash duration in milliseconds
+     * Brief green dip (e.g. on MQTT publish). Only visible in Online phase.
+     * @param ms Dip duration in milliseconds
      */
-    void flashRed(uint16_t ms = 150);
+    void blipGreen(uint16_t ms = 75);
 
     /**
      * Error indicator: solid red while active
@@ -71,10 +83,16 @@ private:
     int _greenPin;              // Green LED pin (activity indicator)
     bool _activeLow;            // LED polarity
     bool _initialized;          // Flag indicating initialization complete
+    Phase _phase;               // Current boot/connection phase
     bool _error;                // Error indicator active (red solid)
-    unsigned long _redOffTime;  // millis() when red flash expires (0 = none)
-    unsigned long _greenOffTime;// millis() when green flash expires (0 = none)
+    bool _blinkOn;              // Current blink output state
+    unsigned long _blinkLast;   // millis() of last blink toggle
+    unsigned long _greenBlipUntil; // millis() when the publish blip ends
+    bool _redOn;                // Last applied red output
+    bool _greenOn;              // Last applied green output
 
+    bool _blink(unsigned long now, uint16_t halfPeriodMs);
+    void _apply(bool redOn, bool greenOn);
     void _writeRed(bool on);
     void _writeGreen(bool on);
 };

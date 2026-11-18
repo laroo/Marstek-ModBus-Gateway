@@ -4,6 +4,7 @@
 .vscode/launch.json
 .vscode/ipch
 private_config.ini
+recorder/
 .DS_Store
 .cache/
 *.wasm

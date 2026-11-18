@@ -44,7 +44,8 @@ int connectionStatus = 0;
 // CONFIGURATION STRUCTURE
 // ============================================================================
 struct Config {
-  char clientId[32]; // Random client ID generated at startup
+  char clientId[40];  // MQTT client ID derived from the ESP32 MAC
+  char gatewayId[16]; // ESP32 MAC hex, used in MQTT topics
 
   // Timing Settings
   unsigned long telemetryInterval = 4000;  // Modbus telemetry poll interval
@@ -143,6 +144,7 @@ bool checkConnectionCallback(void *);
 bool reportConnectionStatusCallback(void *);
 NetworkClient* getActiveClient();
 void pumpServices();
+void mqttPublishActivity();
 
 // ============================================================================
 // SETUP FUNCTION
@@ -157,9 +159,11 @@ void setup() {
   Serial.print(ESP.getFreeHeap());
   Serial.println(" bytes");
 
-  // Generate random client ID for MQTT
-  randomSeed(analogRead(0));
-  sprintf(config.clientId, "marstek_gw_%06X", random(0xFFFFFF));
+  // Stable client ID and gateway topic id from the ESP32 efuse MAC
+  snprintf(config.gatewayId, sizeof(config.gatewayId), "%012llX",
+           (unsigned long long)ESP.getEfuseMac());
+  snprintf(config.clientId, sizeof(config.clientId), "marstek-gw-%s",
+           config.gatewayId);
   Serial.print("[INIT] MQTT Client ID: ");
   Serial.println(config.clientId);
 
@@ -167,6 +171,13 @@ void setup() {
   ledManager = new LEDManager(config.redLedPin, config.greenLedPin);
   if (ledManager) {
     ledManager->initialize();
+    ledManager->setPhase(LEDManager::Phase::Boot);
+    // Blink red for ~1 s before starting the network
+    unsigned long bootUntil = millis() + 1000;
+    while (millis() < bootUntil) {
+      ledManager->update();
+      delay(20);
+    }
     Serial.println("[INIT] LED manager initialized");
   } else {
     Serial.println("[ERROR] Failed to initialize LED manager");
@@ -188,6 +199,9 @@ void setup() {
   Serial.println("[INIT] Network event listener registered");
 
   Ethernet.init(driver);
+  if (ledManager) {
+    ledManager->setPhase(LEDManager::Phase::NetConnecting);
+  }
 
   Serial.println("Initialize Ethernet with DHCP:");
   if (Ethernet.begin()) {
@@ -206,11 +220,15 @@ void setup() {
   }
 
   // Initialize MQTT Manager
+  if (ledManager) {
+    ledManager->setPhase(LEDManager::Phase::MqttConnecting);
+  }
   mqttManager = new MQTTManager(MQTT_BROKER, MQTT_PORT,
-                                config.clientId, MQTT_TOPIC_STATUS,
-                                MQTT_TOPIC_COMMAND, MQTT_USERNAME, MQTT_PASSWORD);
+                                config.clientId, config.gatewayId,
+                                MQTT_ROOT_TOPIC, MQTT_USERNAME, MQTT_PASSWORD);
   if (mqttManager) {
     mqttManager->initialize(activeClient);
+    mqttManager->setActivityCallback(mqttPublishActivity);
 
     // Set Marstek controller reference for telemetry and command handling
     if (marstek) {
@@ -315,17 +333,13 @@ void loop() {
     String cmd = Serial.readStringUntil('\n');
     cmd.trim();
     if (cmd.length() > 0 && marstek) {
-      if (marstek->handleCommand(cmd) && ledManager) {
-        ledManager->flashGreen();
-      }
+      marstek->handleCommand(cmd);
     }
   }
 
   // Update Marstek controller (polls telemetry on interval)
   if (marstek) {
-    if (marstek->update() && ledManager) {
-      ledManager->flashGreen();
-    }
+    marstek->update();
   }
 
   // Network-dependent services
@@ -339,8 +353,15 @@ void loop() {
     }
   }
 
-  // Error indicator: red while Modbus unhealthy or no network
+  // LED phase follows connection state; red on Modbus/network error
   if (ledManager) {
+    if (connectionStatus == 0) {
+      ledManager->setPhase(LEDManager::Phase::NetConnecting);
+    } else if (!mqttManager || !mqttManager->isConnected()) {
+      ledManager->setPhase(LEDManager::Phase::MqttConnecting);
+    } else {
+      ledManager->setPhase(LEDManager::Phase::Online);
+    }
     bool modbusError = marstek && !marstek->isHealthy();
     bool networkError = connectionStatus == 0;
     ledManager->setError(modbusError || networkError);
@@ -365,6 +386,15 @@ void loop() {
  */
 NetworkClient* getActiveClient() {
   return activeClient;
+}
+
+// ============================================================================
+// MQTT PUBLISH ACTIVITY (green LED dip)
+// ============================================================================
+void mqttPublishActivity() {
+  if (ledManager) {
+    ledManager->blipGreen();
+  }
 }
 
 // ============================================================================
